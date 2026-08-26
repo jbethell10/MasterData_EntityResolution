@@ -31,7 +31,6 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 st.set_page_config(
     page_title="Retail Product Resolution",
-    page_icon="📦",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -89,13 +88,13 @@ def load_signals(dataset_key: str):
     return bench, precompute_signals(bench, block_size=50)
 
 
-st.markdown("# 📦 Retail Product Resolution Platform")
+st.markdown("# Retail Product Resolution Platform")
 st.markdown("**Intelligent product matching for inventory accuracy**")
 
 tab_trace, tab_routing, tab_bench = st.tabs([
-    "📝 Product Trace",
-    "⚡ Live Resolution",
-    "🔧 Engine Tuning"
+    "Product Trace",
+    "Live Resolution",
+    "Engine Tuning"
 ])
 
 
