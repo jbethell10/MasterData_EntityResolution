@@ -1,18 +1,25 @@
 %==============================================================================
 %  Master Data Entity Resolution -- proposal
 %
-%  Compiles with pdflatex on a stock TeX Live / Overleaf install; every package
-%  below ships in the base distribution, so there is nothing to install.
+%  IMPORTANT: this is a COMPLETE document. Do not paste it into an existing
+%  Overleaf project that already has \documentclass ... \begin{document}.
+%  Doing so produces two preambles, and LaTeX fails with
+%      "\documentclass can be used only in preamble"
+%  because every \usepackage then sits after \begin{document}.
 %
-%      pdflatex mder_proposal.tex   (run twice, for the table of contents)
+%  Correct usage: replace the whole of main.tex with this file, or upload it
+%  as its own .tex and set it as the compile target.
 %
-%  Edit \orgname and \authorname below before circulating.
+%      pdflatex mder_proposal.tex     (run twice)
+%
+%  Edit \orgname below before circulating.
 %==============================================================================
 \documentclass[11pt,a4paper]{article}
 
 \usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
 \usepackage{lmodern}
+\usepackage{graphicx}
 \usepackage[margin=2.2cm]{geometry}
 \usepackage{booktabs}
 \usepackage{array}
@@ -49,7 +56,7 @@
 
 %--------------------------------------------------------------------- metadata
 \newcommand{\orgname}{[Organisation]}
-\newcommand{\authorname}{Jacob Bethell}
+\newcommand{\authorname}{Jacob Nicholas Douglas Bethell}
 
 \begin{document}
 
@@ -59,7 +66,7 @@
   {\large Automated resolution of supplier product submissions\\
    against a master catalogue}\\[0.9em]
   {\normalsize \authorname\quad\textbullet\quad Working prototype and evaluation}\\[0.2em]
-  {\small\color{black!55} Prepared for \orgname\ --- \today}
+  {\small\color{black!55} Prepared for \orgname\ --- August 2026}
 \end{center}
 
 \vspace{0.4em}

@@ -11,6 +11,24 @@ Edit two commands near the top of the file:
 \newcommand{\authorname}{Jacob Bethell}
 ```
 
+## Do not paste this into an existing Overleaf project
+
+`mder_proposal.tex` is a **complete document** — it has its own
+`\documentclass`, preamble and `\begin{document}`. Pasting it into Overleaf's
+default `main.tex` (which already has those) produces two preambles and fails
+with:
+
+```
+! LaTeX Error: Can be used only in preamble.
+l.17 \documentclass[11pt,a4paper]{article}
+```
+
+because every `\usepackage` then sits after `\begin{document}`, leaving
+`\panel`, the colours and `booktabs` undefined.
+
+**Instead:** replace the entire contents of `main.tex` with this file, or upload
+it as its own `.tex` and set it as the compile target (Menu → Main document).
+
 ## Compiling
 
 No TeX toolchain is installed on this machine. Two options:
