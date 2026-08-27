@@ -1,0 +1,333 @@
+%==============================================================================
+%  Master Data Entity Resolution -- proposal
+%
+%  Compiles with pdflatex on a stock TeX Live / Overleaf install; every package
+%  below ships in the base distribution, so there is nothing to install.
+%
+%      pdflatex mder_proposal.tex   (run twice, for the table of contents)
+%
+%  Edit \orgname and \authorname below before circulating.
+%==============================================================================
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage[hidelinks]{hyperref}
+
+%------------------------------------------------------------------ house style
+\definecolor{accent}{HTML}{003DA5}
+\definecolor{rulegrey}{HTML}{C8CDD4}
+\definecolor{panelbg}{HTML}{F2F5F9}
+
+\titleformat{\section}{\large\bfseries\color{accent}}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{0.6em}{}
+\titlespacing*{\section}{0pt}{1.35em}{0.5em}
+\titlespacing*{\subsection}{0pt}{0.9em}{0.35em}
+
+\setlist[itemize]{leftmargin=1.2em,itemsep=0.25em,topsep=0.3em}
+\setlength{\parskip}{0.45em}
+\setlength{\parindent}{0pt}
+\renewcommand{\arraystretch}{1.15}
+
+% a light call-out panel
+\newcommand{\panel}[1]{%
+  \par\vspace{0.4em}%
+  \noindent\colorbox{panelbg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep}%
+      \vspace{0.35em}#1\vspace{0.35em}%
+    \end{minipage}}%
+  \par\vspace{0.5em}%
+}
+
+%--------------------------------------------------------------------- metadata
+\newcommand{\orgname}{[Organisation]}
+\newcommand{\authorname}{Jacob Bethell}
+
+\begin{document}
+
+%================================================================== title block
+\begin{center}
+  {\LARGE\bfseries\color{accent} Master Data Entity Resolution}\\[0.35em]
+  {\large Automated resolution of supplier product submissions\\
+   against a master catalogue}\\[0.9em]
+  {\normalsize \authorname\quad\textbullet\quad Working prototype and evaluation}\\[0.2em]
+  {\small\color{black!55} Prepared for \orgname\ --- \today}
+\end{center}
+
+\vspace{0.4em}
+{\color{rulegrey}\hrule height 1.2pt}
+\vspace{1.0em}
+
+%============================================================ executive summary
+\section*{Summary}
+
+Every product a supplier sends us arrives described three different ways: what
+is printed on the packaging, what the supplier typed into our portal, and what
+our master catalogue already holds. Deciding whether those three describe the
+same product is currently manual work, and getting it wrong in either direction
+is expensive --- a duplicate record fragments sales reporting and stock, while a
+wrong merge silently corrupts a record that many downstream systems trust.
+
+I have built a working eight-stage pipeline that makes that decision
+automatically, attaches a calibrated confidence figure to it, and routes each
+submission to one of three outcomes: merge without review, queue for a human, or
+reject. It is evaluated on three independent datasets, including 2{,}256 real
+grocery products and 140 real packaging photographs.
+
+\panel{%
+\textbf{What I am asking for:} a time-boxed pilot on a real supplier feed --- roughly
+\textbf{six weeks}, one engineer, plus a data steward for two days a week to label
+outcomes. The prototype already exists and is tested; what it has never seen is
+\emph{our} catalogue and \emph{our} suppliers. The pilot answers one question:
+what share of submissions can be resolved without a human, at a wrong-merge rate
+we are willing to accept?}
+
+%=================================================================== the problem
+\section{The problem}
+
+A supplier submission has to be matched to exactly one catalogue record before
+anything downstream can use it. The difficulty is that the three descriptions
+rarely agree:
+
+\begin{itemize}
+  \item the packaging says \textsf{Mars}, the portal submission says
+        \textsf{Mars Inc}, the catalogue says \textsf{Mars};
+  \item the pack says \textsf{51g}, the submission says \textsf{0.051kg};
+  \item and roughly one supplier submission in three contains at least one
+        outright keying error.
+\end{itemize}
+
+Two distinct failure modes follow, and they matter because they have different
+owners. A \textbf{supplier data-entry error} --- where the pack and the submitted
+form contradict each other --- goes back to the supplier. A \textbf{resolution
+ambiguity} --- where the submission is fine but we cannot tell which of several
+similar catalogue products it refers to --- goes to a data steward. A system that
+reports both as ``failed'' tells you how many problems you have without telling
+you who should fix any of them. The pipeline keeps them separate throughout, and
+the audit log records which of the two every held row was.
+
+%============================================================== what was built
+\section{What has been built}
+
+Eight stages, each reading and writing a plain file so any stage can be run,
+inspected or replaced on its own.
+
+\begin{center}
+\begin{tabular}{@{}p{0.6cm}p{4.4cm}p{10.6cm}@{}}
+\toprule
+\textbf{\#} & \textbf{Stage} & \textbf{What it contributes} \\
+\midrule
+01 & Vision extraction   & Reads brand, description and barcode off a packaging photograph (Tesseract, two passes with per-field arbitration). \\
+02 & Normalisation       & Canonical case, punctuation and units, so \textsf{0.030kg} and \textsf{30g} compare equal. \\
+03 & Cross-check         & Compares the three sources pairwise; isolates supplier data-entry errors from resolution ambiguity. \\
+04 & Candidate matching  & Ranks the catalogue on four independent signals: fuzzy text, phonetic, TF--IDF character $n$-grams, and barcode. \\
+05 & LLM disambiguation  & Called only when retrieval is genuinely undecided; restricted to the shortlist retrieval already produced, and capped so it can never authorise an unreviewed merge. \\
+06 & Barcode verification & Three-way agreement across pack, submission and catalogue, with GS1 check-digit validation. \\
+07 & Confidence \& routing & Combines the available signals into a calibrated probability and routes: merge / review / reject. \\
+08 & Resolve, log, learn & Audit log with full evidence, plus a cache of human-approved corrections so the same fix is never re-derived. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Two design decisions are worth surfacing because they are what keep the system
+safe rather than merely accurate.
+
+\textbf{Absent evidence is not negative evidence.} A missing barcode used to score
+zero --- numerically identical to three barcodes that actively contradict one
+another. On a catalogue with no barcodes at all, that capped every row below the
+reject threshold and the router emitted a single constant verdict regardless of
+input. Confidence is now a weighted mean over the signals actually
+\emph{observable} for that row, and missing evidence caps how confident the
+system is permitted to be rather than masquerading as evidence against.
+
+\textbf{One signal corroborates nothing.} However strong a text match is, the
+pipeline will not merge a record unreviewed unless a second, independent signal
+agrees. A perfect text match with nothing to check it against is precisely the
+case that merges two different products with similar names. Section~\ref{sec:cal}
+quantifies what that rule is worth.
+
+%===================================================================== evidence
+\section{Evidence}
+
+Three datasets, deliberately different in what they can and cannot prove.
+
+\begin{center}
+\begin{tabular}{@{}p{5.0cm}rrp{5.6cm}@{}}
+\toprule
+\textbf{Dataset} & \textbf{Catalogue} & \textbf{Top-1} & \textbf{What it establishes} \\
+\midrule
+Abt--Buy (Leipzig benchmark)     & 1{,}081 & 87.7\% & Text matching against independently written listings. 95\% top-3. \\
+Amazon--Google (Leipzig)         & 1{,}363 & 80.2\% & The same engine on a harder, denser catalogue. 95\% top-3. \\
+Open Food Facts --- photograph only & 2{,}256 & 24.0\% & Real packaging photo against a real catalogue: what vision alone is worth. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The Leipzig figures are the honest text-matching benchmark: both sides are real
+retail listings written independently by different merchants, which is the same
+problem shape as a supplier submission written independently of our catalogue.
+
+\panel{%
+\textbf{A number I am deliberately not quoting.} On the Open Food Facts data the
+pipeline scores 100\% when matching the \emph{submission}. That figure is
+meaningless: the submission in that dataset is generated by lightly corrupting
+the catalogue record, so it is a mangled copy of the answer rather than an
+independent description. It is in the evaluation harness to exercise the code
+path, not to support a claim. The Leipzig 87.7\% is the number I would defend.}
+
+%========================================================== calibrated confidence
+\section{Calibrated confidence}\label{sec:cal}
+
+Routing thresholds are only meaningful if the confidence attached to a decision
+is a real probability. Originally it was not: confidence was a raw match margin
+divided by a constant chosen against a 30-product test catalogue. On a
+1{,}081-product catalogue the median margin for a \emph{correct} match is 0.078,
+so almost every row was squashed into the bottom of the range.
+
+The mapping is now fitted on labelled pairs and evaluated on data it never saw:
+
+\begin{center}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+& \textbf{Brier} $\downarrow$ & \textbf{Log loss} $\downarrow$ & \textbf{ECE} $\downarrow$ & \textbf{AUC} \\
+\midrule
+Previous (constant divisor) & 0.530 & 1.544 & 0.656 & 0.908 \\
+Calibrated (Platt scaling)  & \textbf{0.076} & \textbf{0.247} & \textbf{0.036} & 0.908 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Expected calibration error --- the average gap between the confidence claimed and
+the share that turn out correct --- falls from 0.656 to 0.036. Discrimination
+(AUC) is unchanged by construction: calibration is monotone, so it cannot alter
+which candidate ranks first, only what the number attached to it means.
+
+\textbf{Operationally}, on held-out data this moves \textbf{425 correct matches out of
+the reject pile and into the review queue}. Rejection now means ``we have reason
+to believe this does not match'' rather than ``we could not tell''.
+
+\panel{%
+\textbf{What the corroboration rule is worth, in records.} Disable it and allow the
+calibrated 90\% band to merge unreviewed, and 398 submissions auto-merge at 96.7\%
+precision --- \textbf{13 wrong records written into the master catalogue}. The band
+is behaving exactly as specified; 90\% is simply not a safe bar for an unreviewed
+write. This is the kind of trade-off the business should set explicitly, and
+calibration is what makes it visible: an uncalibrated score cannot tell you what
+your threshold costs.}
+
+%================================================================ vision finding
+\section{What packaging photographs are actually worth}
+
+I tested vision extraction on 140 real contributor photographs against the
+2{,}256-product catalogue. A single front-of-pack photograph resolves the correct
+product \textbf{24\% of the time}.
+
+The limit is not image quality or OCR tuning. Brand recall is only 33\% even on
+images where the reader extracted more than 200 characters, because the brand is
+frequently a \emph{logo} rather than text --- one Marks \& Spencer pack front reads
+``\textsf{FAIRTRADE EST. 1884 SINGLE ORIGIN PERU}'' and never states the brand in
+readable type. Separately, the barcode is not on the front of a pack at all, so
+it cannot be recovered from a front photograph under any amount of processing.
+
+\textbf{The operational conclusion is to design intake around the scanned barcode
+and the typed submission, and treat the photograph as corroboration only.} That
+is how goods-in already works --- the barcode comes off a scanner, not a camera ---
+and it is what the pipeline's routing rules already assume.
+
+Barcode handling was widened as a result. A real catalogue is 86.8\% EAN-13 but
+12.9\% EAN-8 --- small packs where a 13-digit symbol does not physically fit.
+Validating EAN-13 only discarded the barcode evidence for one product in seven
+and reported it as a \emph{missing} barcode rather than one we had refused to
+parse. Accepting all GS1 retail formats took usable barcodes from 85.5\% to
+99.2\%.
+
+%============================================================ trust / methodology
+\section{Why these numbers can be trusted}
+
+An earlier version of this work reported 100\% accuracy on real data. That was a
+\textbf{ground-truth leak}: the evaluation harness copied the catalogue record's own
+barcode into the supplier submission, so the matcher was handed the answer on
+every row. With the leak closed, the same engine scores 87.7\%.
+
+The leak was worth finding for a reason beyond the corrected figure. It made
+every metric look \emph{better}, kept the entire test suite green, and made the
+dashboard look healthier. Nothing about it announced itself. The only thing that
+surfaced it was two independent measurements of the same quantity disagreeing
+--- the pipeline claiming 100\% where a separate code path scored the same engine
+at 85\%.
+
+The evaluation harness now carries explicit invariants against that class of
+failure, including a check that fails the build if any input field is a
+byte-identical copy of a field the input should not have been able to observe.
+There are \textbf{63 automated tests}, all runnable offline with no credentials.
+
+%===================================================================== proposal
+\section{Proposal}
+
+A six-week pilot on one real supplier feed, scoped to answer a single question:
+\emph{what share of submissions can be resolved without human review, at a
+wrong-merge rate we are prepared to accept?}
+
+\begin{center}
+\begin{tabular}{@{}p{2.0cm}p{7.4cm}p{6.6cm}@{}}
+\toprule
+\textbf{Weeks} & \textbf{Activity} & \textbf{Output} \\
+\midrule
+1--2 & Point the pipeline at a real catalogue extract and one live supplier feed. & Baseline accuracy on our own data. \\
+3--4 & Data steward labels outcomes on a sample; calibrate confidence against those labels. & Thresholds that mean what they say \emph{here}. \\
+5--6 & Shadow-run alongside the current manual process; compare decisions. & Measured automation rate and wrong-merge rate. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{What I need:} a catalogue extract, one supplier feed, and roughly two days
+a week of a data steward's time for labelling. \textbf{Nothing is written to any
+production system} --- the pilot shadows the existing process and produces a
+comparison, not a migration.
+
+Calibration must be fitted on our own catalogue rather than transferred. I
+measured this directly: a calibration fitted on one catalogue and applied to
+another is systematically overconfident, claiming 65\% where the true rate is
+49\%. That is why the steward labelling in weeks 3--4 is not optional --- it is
+what makes the confidence figures valid for us.
+
+%======================================================================== risks
+\section{Risks and open questions}
+
+\begin{itemize}
+  \item \textbf{No-match submissions are untested.} Every labelled pair in the
+        public benchmarks is a genuine match, so the reject threshold has never
+        been exercised against a submission for a product we simply do not
+        stock --- which a real feed contains constantly. This is the first thing
+        the pilot should measure.
+  \item \textbf{The supplier feed in testing is simulated.} It is derived from
+        catalogue records, so it is easier than a real one. The Leipzig figures
+        are the conservative estimate; our own feed may sit below them.
+  \item \textbf{Phonetic matching assumes English.} It degrades on brands that
+        are not, which matters for imported ranges.
+  \item \textbf{Automation rate is unknown for our data.} I can evidence that
+        the engine works and that its confidence is honest. What share of
+        \emph{our} submissions clear an acceptable threshold is exactly what the
+        pilot exists to find out, and I would rather establish it than estimate
+        it here.
+\end{itemize}
+
+\vspace{0.6em}
+{\color{rulegrey}\hrule height 0.6pt}
+\vspace{0.4em}
+{\small\color{black!55}
+Working prototype, evaluation harness and 63 automated tests:
+\href{https://github.com/jbethell10/MasterData_EntityResolution}%
+{github.com/jbethell10/MasterData\_EntityResolution}.
+Public data used under ODbL (Open Food Facts) and the Leipzig entity-resolution
+benchmark terms.}
+
+\end{document}
