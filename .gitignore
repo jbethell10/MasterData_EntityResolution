@@ -21,3 +21,8 @@ data/benchmark/*.zip
 .DS_Store
 .idea/
 .vscode/
+
+# Open Food Facts working data: API response cache, downloaded contributor
+# photos, and the fetched catalog. All reproducible via
+# scripts/fetch_open_food_facts.py, and the photos are contributor-owned.
+data/real/

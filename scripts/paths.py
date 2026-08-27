@@ -31,11 +31,15 @@ LEIPZIG_DATASETS = ("abt-buy", "amazon-google")
 def run_dir(mode: str = "synthetic", dataset: str | None = None) -> Path:
     """Directory holding one run's artifacts (db + all stage CSVs).
 
-    synthetic          -> data/synthetic/
-    leipzig/abt-buy    -> data/leipzig/abt-buy/
+    synthetic          -> data/synthetic/          rendered labels, seed catalog
+    leipzig/abt-buy    -> data/leipzig/abt-buy/    real text, no barcodes/photos
+    real               -> data/real/               Open Food Facts: real records,
+                                                   real barcodes, real photographs
     """
     if mode == "synthetic":
         return DATA / "synthetic"
+    if mode == "real":
+        return DATA / "real"
     if mode == "leipzig":
         if dataset not in LEIPZIG_DATASETS:
             raise ValueError(f"unknown leipzig dataset: {dataset!r}")
@@ -60,12 +64,13 @@ def ensure(mode: str = "synthetic", dataset: str | None = None) -> Path:
 
 def add_mode_args(parser) -> None:
     """Standard --mode/--dataset pair, so every stage is pointed at one run."""
-    parser.add_argument("--mode", choices=["synthetic", "leipzig"], default="synthetic")
+    parser.add_argument("--mode", choices=["synthetic", "leipzig", "real"],
+                        default="synthetic")
     parser.add_argument("--dataset", choices=list(LEIPZIG_DATASETS), default="abt-buy",
                         help="which Leipzig benchmark (only used with --mode leipzig)")
 
 
 def resolve(args) -> tuple[Path, Path]:
     """(run_dir, db_path) for the mode/dataset on a parsed argparse namespace."""
-    dataset = args.dataset if args.mode == "leipzig" else None
+    dataset = getattr(args, "dataset", None) if args.mode == "leipzig" else None
     return ensure(args.mode, dataset), db_path(args.mode, dataset)

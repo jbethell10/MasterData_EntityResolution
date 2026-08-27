@@ -111,7 +111,107 @@ def ocr_fields(img: Image.Image) -> dict:
     return merged
 
 
+def _norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+
+def _key(s: str) -> str:
+    """Comparison key with ALL punctuation and spacing removed.
+
+    Substituting punctuation with a space (as _norm does) silently fails the
+    most common real case there is: the catalog says "Sainsbury's" and OCR
+    reads "Sainsburys". Under _norm those become "sainsbury s" and
+    "sainsburys", which do not match -- so a perfectly correct reading was
+    being scored as a miss. Retailer brands are full of apostrophes and
+    ampersands, so this was not a rare edge: it accounted for most of the
+    apparent brand-recall failures on the Open Food Facts fronts.
+    """
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def _brand_matches(extracted: str, true_brand: str) -> bool:
+    """Synthetic packs put the brand on its own line, so this stays strict."""
+    return _norm(extracted) == _norm(true_brand)
+
+
+def ocr_read_whole_pack(img: Image.Image) -> dict:
+    """Read a REAL photograph, where there is no layout to rely on.
+
+    The synthetic parser takes line 0 as the brand, line 1 as the product name
+    and the "NET WEIGHT" line as the quantity, because the renderer put them
+    there. A photograph of an actual pack has no such contract: the brand may
+    be a logo rather than text, the weight may be on a side panel or rotated,
+    and half the visible text is ingredients, allergens, a recycling mark and a
+    French translation.
+
+    So instead of pretending to parse structure that is not there, this returns
+    the whole text blob plus the one field that IS self-identifying -- the
+    barcode, which carries its own check digit. Field accuracy is then measured
+    as RECALL: does the true brand appear anywhere in what OCR read? That is
+    both honest and the right question, because a downstream matcher would be
+    handed the whole blob rather than a fabricated structure.
+
+    Photos are downscaled first: contributor images run to several thousand
+    pixels, which is slower without being more legible to Tesseract.
+    """
+    if max(img.size) > 1600:
+        scale = 1600 / max(img.size)
+        img = img.resize((int(img.width * scale), int(img.height * scale)))
+
+    plain = pytesseract.image_to_string(img)
+    sharpened = ImageOps.grayscale(img).filter(
+        ImageFilter.UnsharpMask(radius=2, percent=180, threshold=2))
+    sharp = pytesseract.image_to_string(sharpened)
+
+    text = plain + "\n" + sharp
+    gtin = pick_barcode(text)
+    return {"text": text, "gtin": gtin,
+            "brand": "", "product_name": "", "quantity": ""}
+
+
+def _found_in(needle: str, haystack: str, min_len: int = 4) -> bool:
+    """Did OCR capture this field anywhere in what it read?
+
+    Compared on the punctuation-free key so "Sainsbury's" matches "Sainsburys".
+    Short needles are required to be at least `min_len` characters, because a
+    two- or three-letter key will appear inside some longer word by chance and
+    manufacture a false hit.
+    """
+    n = _key(needle)
+    return len(n) >= min_len and n in _key(haystack)
+
+
+def _images_for(mode: str):
+    """(image_path, master_id) pairs for a run.
+
+    Synthetic images are named by master_id; real ones by barcode, because the
+    barcode is what Open Food Facts keys on and it survives a catalog rebuild
+    where a row index would not.
+    """
+    if mode == "synthetic":
+        for p in sorted(IMG_DIR.glob("artwork_*.png")):
+            yield p, int(p.stem.split("_")[1])
+        return
+    real_dir = paths.run_dir("real") / "images"
+    conn = sqlite3.connect(paths.db_path("real"))
+    id_by_code = dict(conn.execute("SELECT gtin, master_id FROM master_catalog"))
+    conn.close()
+    for p in sorted(real_dir.glob("front_*.jpg")):
+        code = p.stem.replace("front_", "")
+        if code in id_by_code:
+            yield p, id_by_code[code]
+
+
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--mode", choices=["synthetic", "real"], default="synthetic")
+    args = ap.parse_args()
+
+    global DB_PATH, OUT_PATH
+    DB_PATH = paths.db_path(args.mode)
+    OUT_PATH = paths.run_dir(args.mode) / "artwork_extracted.csv"
+
     conn = sqlite3.connect(DB_PATH)
     master = {
         row[0]: row[1:] for row in conn.execute(
@@ -124,14 +224,28 @@ def main():
     correct = {"brand": 0, "quantity": 0, "gtin": 0}
     total = 0
 
-    for img_path in sorted(IMG_DIR.glob("artwork_*.png")):
-        master_id = int(img_path.stem.split("_")[1])
-        extracted = ocr_fields(Image.open(img_path))
+    real = args.mode == "real"
+    for img_path, master_id in _images_for(args.mode):
+        extracted = (ocr_read_whole_pack if real else ocr_fields)(Image.open(img_path))
 
         true_gtin, true_brand, true_name, true_qty = master[master_id]
         total += 1
-        brand_ok = extracted["brand"].strip().lower() == true_brand.strip().lower()
-        qty_ok = extracted["quantity"].replace(" ", "").lower() == (true_qty or "").replace(" ", "").lower()
+        if real:
+            # Recall against the whole blob -- see ocr_read_whole_pack.
+            blob = extracted["text"]
+            brand_ok = _found_in(true_brand, blob)
+            qty_ok = _found_in(true_qty, blob)
+            # keep the FULL text: field-by-field recall is diagnostic, but the
+            # question that decides whether vision extraction is usable is
+            # whether the blob retrieves the right catalog row, and that needs
+            # all of it.
+            extracted = dict(extracted,
+                             brand=" ".join(blob.split()),
+                             product_name="", quantity="")
+        else:
+            brand_ok = _brand_matches(extracted["brand"], true_brand)
+            qty_ok = (extracted["quantity"].replace(" ", "").lower()
+                      == (true_qty or "").replace(" ", "").lower())
         gtin_ok = extracted["gtin"] == true_gtin
         correct["brand"] += brand_ok
         correct["quantity"] += qty_ok

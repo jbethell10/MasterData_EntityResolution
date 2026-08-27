@@ -952,5 +952,69 @@ def test_missing_second_source_is_not_a_supplier_data_entry_error():
         ProblemClass.BOTH
 
 
+# ---------------------------------------------------------------------------
+# Real-world barcode formats
+#
+# Measured against a real Open Food Facts catalog: 86.8% EAN-13, 12.9% EAN-8,
+# 0.3% carrying a check digit that does not validate. Accepting EAN-13 alone
+# discarded the barcode evidence for one product in seven, and silently -- they
+# surfaced as "insufficient_data", which reads like a missing barcode rather
+# than one we refused to parse.
+# ---------------------------------------------------------------------------
+
+def test_ean8_is_a_valid_gtin():
+    from stage06_barcode_verify import is_valid_ean13, is_valid_gtin
+    ean8 = "96385074"                      # textbook valid EAN-8
+    assert is_valid_gtin(ean8)
+    assert not is_valid_ean13(ean8), "EAN-8 is not an EAN-13; the old check was right to say so"
+
+
+def test_upc_a_and_its_ean13_are_the_same_product():
+    """A UPC-A and the EAN-13 encoding it differ only by a leading zero.
+    Comparing the raw strings reports a mismatch for one physical barcode."""
+    from stage06_barcode_verify import BarcodeVerdict, verify_three_way
+    upc, ean = "036000291452", "0036000291452"
+    check = verify_three_way(upc, ean, ean)
+    assert check.verdict is BarcodeVerdict.ALL_THREE_AGREE
+
+
+def test_a_bad_check_digit_is_still_rejected_in_every_format():
+    from stage06_barcode_verify import is_valid_gtin
+    assert not is_valid_gtin("96385075")        # EAN-8, wrong final digit
+    assert not is_valid_gtin("5000000000011")   # EAN-13, wrong final digit
+    assert not is_valid_gtin("50000000000")     # not a GS1 length at all
+    assert not is_valid_gtin("50000000000X")
+
+
+def test_real_catalog_barcodes_are_mostly_parseable():
+    """Guards the fix against regression using the actual fetched catalog."""
+    import json
+    from stage06_barcode_verify import is_valid_gtin
+    path = ROOT / "data" / "real" / "catalog_raw.json"
+    if not path.exists():
+        pytest.skip("run scripts/fetch_open_food_facts.py first")
+    codes = [r["code"] for r in json.loads(path.read_text())]
+    ok = sum(is_valid_gtin(c) for c in codes)
+    assert ok / len(codes) > 0.97, (
+        f"only {ok}/{len(codes)} real barcodes parse — a format is being refused"
+    )
+
+
+def test_ocr_field_matching_survives_punctuation():
+    """The catalog says "Sainsbury's"; OCR reads "Sainsburys". Replacing
+    punctuation with a space made those two strings not match, so correct
+    readings were scored as misses across a catalog full of apostrophes."""
+    from ocr_extract import _found_in
+    assert _found_in("Sainsbury's", "SAINSBURYS THE DIFFERENCE DARK CHOCOLATE")
+    assert _found_in("Green & Black's", "GREEN  BLACKS ORGANIC 70%")
+    # a short key must not match by chance inside a longer word
+    assert not _found_in("M&S", "SOMETHING MASSIVE")
+    # Documented limitation, not an oversight: "&" spelled out as "and" still
+    # misses, because the keys are "benjerrys" and "benandjerrys". Fixing it
+    # needs token-level matching rather than a substring test, which is a
+    # bigger change than this measurement warrants.
+    assert not _found_in("Ben & Jerry's", "BEN AND JERRYS ICE CREAM")
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

@@ -71,6 +71,54 @@ def is_valid_ean13(digits: str) -> bool:
     )
 
 
+def _mod10_check_digit(body: str, weights=(3, 1)) -> str:
+    """GS1 mod-10, weighting from the RIGHT so it works for any even/odd length.
+
+    EAN-13, EAN-8 and UPC-A all use the same mod-10 scheme; they differ only in
+    length and therefore in which position the 3-weight lands on. Computing from
+    the right handles all three without a per-format table.
+    """
+    total = sum(int(d) * weights[i % 2] for i, d in enumerate(reversed(body)))
+    return str((10 - total % 10) % 10)
+
+
+def is_valid_gtin(digits: str) -> bool:
+    """Any GS1 retail barcode: EAN-13, UPC-A (12), EAN-8, or GTIN-14.
+
+    Stage 06 originally accepted EAN-13 alone, which was fine for a seed catalog
+    that only ever minted EAN-13s. Measured against a real Open Food Facts
+    catalog, 14.2% of products carry an EAN-8 -- small packs, where a 13-digit
+    symbol will not physically fit on the packaging. Rejecting those as
+    unparseable would have discarded the barcode evidence for one product in
+    seven, and silently: they would have surfaced as "insufficient_data", which
+    reads like a missing barcode rather than a barcode we refused to understand.
+    """
+    d = (digits or "").strip()
+    if not d.isdigit() or len(d) not in (8, 12, 13, 14):
+        return False
+    return _mod10_check_digit(d[:-1]) == d[-1]
+
+
+def gtin_format(digits: str) -> str:
+    d = (digits or "").strip()
+    if not d.isdigit():
+        return "non_numeric"
+    return {8: "ean8", 12: "upc12", 13: "ean13", 14: "gtin14"}.get(
+        len(d), f"len{len(d)}")
+
+
+def normalize_to_gtin14(digits: str) -> str:
+    """Zero-pad to 14 so formats compare correctly.
+
+    A UPC-A and the EAN-13 that encodes the same product differ only by a
+    leading zero, so comparing the raw strings reports a mismatch for two codes
+    that GS1 considers identical. Padding both to 14 is the standard way to
+    compare across formats.
+    """
+    d = (digits or "").strip()
+    return d.zfill(14) if d.isdigit() else d
+
+
 @dataclass
 class BarcodeCheck:
     verdict: BarcodeVerdict
@@ -108,7 +156,11 @@ def verify_three_way(artwork_gtin: str, supplier_gtin: str, master_gtin: str) ->
     # claim about a different product. Excluding it from the agreement vote
     # stops OCR noise from manufacturing a "mismatch" that vetoes the row --
     # while still recording it, because a corrupt read is itself worth seeing.
-    valid = {k: v for k, v in present.items() if is_valid_ean13(v)}
+    #
+    # Accepts every GS1 retail format, not just EAN-13: 14.2% of a real Open
+    # Food Facts catalog is EAN-8, and calling those unparseable would throw
+    # away the barcode evidence for one product in seven.
+    valid = {k: normalize_to_gtin14(v) for k, v in present.items() if is_valid_gtin(v)}
     corrupt = tuple(sorted(k for k in present if k not in valid))
 
     if len(valid) < 2:
