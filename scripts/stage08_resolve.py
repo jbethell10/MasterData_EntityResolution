@@ -30,12 +30,19 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = ROOT / "data" / "mder.db"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import paths  # noqa: E402
+
+# The audit log and alias cache live in the same database as the catalog the
+# run resolved against, so a run's decisions can never be read back against a
+# different dataset's products.
+DB_PATH = paths.db_path("synthetic")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS audit_log (

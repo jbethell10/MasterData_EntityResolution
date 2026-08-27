@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent
+SYN = ROOT / "data" / "synthetic"   # the synthetic run's artifacts
 SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
@@ -35,7 +36,7 @@ def test_master_catalog_gtins_are_valid_ean13():
     """Every GTIN in the catalog must carry a correct EAN-13 check digit --
     if this fails, the barcode-verify stage would be comparing against
     garbage ground truth."""
-    conn = sqlite3.connect(ROOT / "data" / "mder.db")
+    conn = sqlite3.connect(SYN / "mder.db")
     gtins = [row[0] for row in conn.execute("SELECT gtin FROM master_catalog")]
     conn.close()
     assert len(gtins) >= 30
@@ -44,7 +45,7 @@ def test_master_catalog_gtins_are_valid_ean13():
         assert ean13_check_digit(body) == check, f"{gtin} has an invalid check digit"
 
 def test_master_catalog_gtins_are_unique():
-    conn = sqlite3.connect(ROOT / "data" / "mder.db")
+    conn = sqlite3.connect(SYN / "mder.db")
     gtins = [row[0] for row in conn.execute("SELECT gtin FROM master_catalog")]
     conn.close()
     assert len(gtins) == len(set(gtins))
@@ -79,7 +80,7 @@ def test_normalize_text_strips_case_and_punctuation():
 # ---------------------------------------------------------------------------
 
 def test_ocr_extraction_ran_and_scored():
-    path = ROOT / "data" / "artwork_extracted.csv"
+    path = SYN / "artwork_extracted.csv"
     assert path.exists(), "run scripts/ocr_extract.py first"
     with open(path, newline="") as f:
         rows = list(csv.DictReader(f))
@@ -103,9 +104,9 @@ def test_cross_check_flags_known_corruptions_as_disagreements():
     """Every event with corruption_applied != 'none' in the source intake
     event should NOT be scored full_agreement -- if it is, the cross-check
     logic is silently ignoring real discrepancies."""
-    with open(ROOT / "data" / "intake_events.csv", newline="") as f:
+    with open(SYN / "intake_events.csv", newline="") as f:
         events = {r["event_id"]: r for r in csv.DictReader(f)}
-    with open(ROOT / "data" / "cross_check_results.csv", newline="") as f:
+    with open(SYN / "cross_check_results.csv", newline="") as f:
         checks = {r["event_id"]: r for r in csv.DictReader(f)}
 
     assert set(events) == set(checks)
@@ -126,7 +127,7 @@ def test_cross_check_flags_known_corruptions_as_disagreements():
     )
 
 def test_cross_check_status_values_are_valid():
-    with open(ROOT / "data" / "cross_check_results.csv", newline="") as f:
+    with open(SYN / "cross_check_results.csv", newline="") as f:
         rows = list(csv.DictReader(f))
     assert len(rows) >= 20
     for r in rows:
@@ -139,7 +140,7 @@ def test_cross_check_status_values_are_valid():
 # ---------------------------------------------------------------------------
 
 def test_candidate_match_recovers_true_master_top3():
-    with open(ROOT / "data" / "candidate_match_results.csv", newline="") as f:
+    with open(SYN / "candidate_match_results.csv", newline="") as f:
         rows = list(csv.DictReader(f))
     assert len(rows) >= 20
     supplier_top3 = sum(r["supplier_top3_hit"] == "True" for r in rows) / len(rows)
@@ -182,7 +183,7 @@ def test_seed_catalog_ids_are_stable_across_rebuilds():
     artwork_<master_id>.png filename join and made the documented
     "fixed seeds -> exactly reproducible" guarantee false.
     """
-    conn = sqlite3.connect(ROOT / "data" / "mder.db")
+    conn = sqlite3.connect(SYN / "mder.db")
     ids = sorted(r[0] for r in conn.execute("SELECT master_id FROM master_catalog"))
     conn.close()
     assert ids == list(range(1, 31)), f"seed ids drifted: {ids[0]}..{ids[-1]}"
@@ -346,7 +347,7 @@ def test_phonetic_on_brand_field_has_no_false_positives_on_the_feed():
 
     catalog = load_catalog()
     brand_of = {mid: brand for mid, _g, brand, _n, _q in catalog}
-    with open(ROOT / "data" / "supplier_feed.csv", newline="") as f:
+    with open(SYN / "supplier_feed.csv", newline="") as f:
         rows = list(csv.DictReader(f))
 
     fired = wrong = 0
@@ -372,7 +373,7 @@ def test_retuned_weights_separate_top1_from_top2_at_least_as_well():
 
     catalog = s4.load_catalog()
     index = s4.build_vector_index(catalog)
-    with open(ROOT / "data" / "intake_events.csv", newline="") as f:
+    with open(SYN / "intake_events.csv", newline="") as f:
         events = list(_csv.DictReader(f))
 
     margins = []
@@ -694,7 +695,7 @@ def test_alias_hit_can_lift_a_held_row_over_the_auto_merge_line():
 def test_pipeline_makes_no_incorrect_auto_merges():
     """The number that actually matters: a wrong auto-merge silently corrupts
     the master catalog, and is far worse than an unnecessary hold."""
-    path = ROOT / "data" / "pipeline_decisions.csv"
+    path = SYN / "pipeline_decisions.csv"
     if not path.exists():
         pytest.skip("run scripts/run_pipeline.py first")
     with open(path, newline="") as f:
@@ -702,6 +703,124 @@ def test_pipeline_makes_no_incorrect_auto_merges():
     merged = [r for r in rows if r["route"] == "auto_merge"]
     wrong = [r for r in merged if r["correct"] != "True"]
     assert not wrong, f"{len(wrong)} incorrect auto-merge(s): {[r['event_id'] for r in wrong]}"
+
+
+# ---------------------------------------------------------------------------
+# Ground-truth leakage
+#
+# These exist because a leak shipped and was reported as a headline result.
+# benchmark_to_intake() copied the catalog record's own GTIN into the supplier
+# submission, so stage 04 scored an exact barcode match against exactly one
+# row -- the correct one -- on every event. That produced "100% top-1 accuracy
+# on real data". Withholding the GTIN, the same engine scores 87.7%.
+#
+# The failure was invisible from the outside: every accuracy number went UP,
+# every test passed, and the dashboard looked healthier. Nothing about a leak
+# announces itself, so the guard has to be an explicit invariant.
+# ---------------------------------------------------------------------------
+
+LEAKABLE_FIELDS = [
+    ("supplier_norm_gtin", "master_gtin"),
+    ("supplier_raw_gtin", "master_gtin"),
+    ("supplier_norm_brand", "master_norm_brand"),
+    ("supplier_norm_product_name", "master_product_name"),
+]
+
+
+def test_leipzig_events_carry_no_barcode():
+    """The Leipzig benchmarks are text-only catalogs -- they contain no
+    barcodes at all. Anything in the GTIN field of a Leipzig event was
+    fabricated by us, and the only place it could have been copied FROM is
+    the answer key."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from load_leipzig_benchmark import build_intake_from_benchmark
+
+    events = build_intake_from_benchmark("abt-buy", max_events=50)
+    assert events, "expected some events"
+    leaked = [e for e in events if e["supplier_norm_gtin"] or e["supplier_raw_gtin"]]
+    assert not leaked, (
+        f"{len(leaked)}/{len(events)} Leipzig events carry a supplier GTIN. "
+        "The source data has no barcodes, so this value came from the master record."
+    )
+
+
+def test_no_supplier_field_is_a_perfect_copy_of_the_master():
+    """Leak canary over whatever intake set is on disk.
+
+    A supplier submission matching the master exactly is normal for SOME rows
+    -- plenty of submissions are simply correct. It matching on EVERY row is
+    not a clean feed, it is the answer key wearing a supplier's name tag.
+    """
+    for run in (ROOT / "data").glob("**/intake_events.csv"):
+        with open(run, newline="") as f:
+            rows = list(csv.DictReader(f))
+        if not rows:
+            continue
+        for sup_key, mas_key in LEAKABLE_FIELDS:
+            if sup_key not in rows[0] or mas_key not in rows[0]:
+                continue
+            populated = [r for r in rows if r[mas_key]]
+            if len(populated) < 20:
+                continue
+            identical = sum(1 for r in populated if r[sup_key] == r[mas_key])
+            ratio = identical / len(populated)
+            assert ratio < 0.99, (
+                f"{run.parent.name}: {sup_key} is identical to {mas_key} on "
+                f"{identical}/{len(populated)} rows ({ratio:.1%}). A supplier "
+                "field that always equals the master field is leaked truth, "
+                "not a matching signal."
+            )
+
+
+def test_synthesised_barcodes_are_structurally_valid():
+    """Stage 04 and stage 06 must agree about whether a GTIN is usable.
+
+    The original f"800{i:010d}7" was 14 characters, so is_valid_ean13()
+    rejected every one and stage 06 reported insufficient_data on all 1,092
+    rows -- while stage 04 scored the same strings as perfect matches worth
+    0.30 each.
+    """
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from load_leipzig_benchmark import build_master_catalog_from_benchmark
+    from stage06_barcode_verify import is_valid_ean13
+
+    for dataset in ("abt-buy", "amazon-google"):
+        catalog = build_master_catalog_from_benchmark(dataset)
+        bad = [g for _, g, *_ in catalog[:200] if not is_valid_ean13(g)]
+        assert not bad, f"{dataset}: {len(bad)} invalid EAN-13s, e.g. {bad[:3]}"
+
+
+def test_the_two_datasets_do_not_share_barcodes():
+    """Index-derived barcodes gave abt-buy row 436 and amazon-google row 436
+    the same GTIN, so a catalog from one dataset would 'verify' against events
+    from the other."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from load_leipzig_benchmark import build_master_catalog_from_benchmark
+
+    a = {g for _, g, *_ in build_master_catalog_from_benchmark("abt-buy")[:300]}
+    b = {g for _, g, *_ in build_master_catalog_from_benchmark("amazon-google")[:300]}
+    assert not (a & b), f"{len(a & b)} barcodes shared across datasets"
+
+
+def test_each_run_mode_writes_to_its_own_directory():
+    """Both modes previously wrote data/intake_events.csv, so a Leipzig run
+    silently replaced the synthetic run's events -- which is why the dashboard's
+    artwork tab started showing image-less Leipzig rows."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import paths
+
+    seen = {
+        paths.run_dir("synthetic"),
+        paths.run_dir("leipzig", "abt-buy"),
+        paths.run_dir("leipzig", "amazon-google"),
+    }
+    assert len(seen) == 3, f"run directories collide: {seen}"
+    dbs = {
+        paths.db_path("synthetic"),
+        paths.db_path("leipzig", "abt-buy"),
+        paths.db_path("leipzig", "amazon-google"),
+    }
+    assert len(dbs) == 3, f"databases collide: {dbs}"
 
 
 if __name__ == "__main__":

@@ -17,9 +17,11 @@ import pytesseract
 from PIL import Image, ImageFilter, ImageOps
 
 ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = ROOT / "data" / "mder.db"
+import sys as _sys; _sys.path.insert(0, str(Path(__file__).resolve().parent))
+import paths  # noqa: E402
+DB_PATH = paths.run_dir("synthetic") / "mder.db"
 IMG_DIR = ROOT / "images"
-OUT_PATH = ROOT / "data" / "artwork_extracted.csv"
+OUT_PATH = paths.run_dir("synthetic") / "artwork_extracted.csv"
 
 BARCODE_RE = re.compile(r"\d{8,14}")
 

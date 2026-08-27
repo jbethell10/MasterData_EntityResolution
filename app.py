@@ -75,8 +75,19 @@ h1, h2, h3, h4, h5, h6 {
 
 
 @st.cache_data
-def load(name):
-    with open(DATA / name, newline="") as f:
+def load(name, mode="synthetic", dataset=None):
+    """Read one stage's output from a specific run.
+
+    Runs are kept in separate directories (data/synthetic, data/leipzig/<set>)
+    because they previously shared filenames -- so loading the benchmark run
+    silently replaced the synthetic run's events, and this tab lost the
+    packaging artwork it exists to show.
+    """
+    import paths
+    path = paths.run_dir(mode, dataset) / name
+    if not path.exists():
+        return {}, []
+    with open(path, newline="") as f:
         rows = list(csv.DictReader(f))
     return {r["event_id"]: r for r in rows}, rows
 
@@ -102,10 +113,23 @@ tab_trace, tab_routing, tab_bench = st.tabs([
 # Tab 1 -- the synthetic end-to-end trace
 # --------------------------------------------------------------------------
 with tab_trace:
-    events, event_rows = load("intake_events.csv")
-    checks, _ = load("cross_check_results.csv")
-    matches, _ = load("candidate_match_results.csv")
+    events, event_rows = load("intake_events.csv", "synthetic")
+    checks, _ = load("cross_check_results.csv", "synthetic")
+    matches, _ = load("candidate_match_results.csv", "synthetic")
     ids = sorted(events, key=lambda x: int(x.split("_")[1]))
+
+    if not event_rows:
+        st.warning(
+            "No synthetic run found. Build it with:\n\n"
+            "```bash\n"
+            "python3 scripts/build_master_catalog.py --mode seed\n"
+            "python3 scripts/generate_synthetic_artwork.py\n"
+            "python3 scripts/build_intake_events.py --mode synthetic\n"
+            "python3 scripts/stage03_cross_check.py\n"
+            "python3 scripts/stage04_candidate_match.py\n"
+            "```"
+        )
+        st.stop()
 
     st.markdown("""
     **End-to-end product matching workflow** — from packaging scan to catalog resolution.
@@ -137,14 +161,14 @@ with tab_trace:
     col_img, col_data = st.columns([1, 2])
     with col_img:
         st.subheader("Packaging artwork")
-        if "image_path" in e and e["image_path"]:
-            img_path = ROOT / e["image_path"]
-            if img_path.exists():
-                st.image(str(img_path), caption=e["image_path"], use_container_width=True)
-            else:
-                st.info("(No image available for this event — text-only validation)")
+        img_path = ROOT / e["image_path"] if e.get("image_path") else None
+        if img_path and img_path.exists():
+            st.image(str(img_path), caption=e["image_path"], use_container_width=True)
         else:
-            st.info("(No image available for this event — text-only validation)")
+            st.info(
+                "Artwork missing for this event. Regenerate with "
+                "`python3 scripts/generate_synthetic_artwork.py`."
+            )
         st.metric("True master_id", e["true_master_id"])
 
     with col_data:
@@ -220,11 +244,17 @@ with tab_trace:
 # --------------------------------------------------------------------------
 with tab_routing:
     st.markdown("""
-    **Real product resolution on benchmark data** — matching supplier submissions against
-    master catalog. Choose a dataset (Abt-Buy or Amazon-Google, 1,000+ products each) and
-    inspect how submissions route: auto-merge (confidence ≥90%), review (60–90%), or reject (<60%).
+    **Real product resolution on benchmark data** — matching supplier submissions against a
+    master catalog of 1,000+ products. Choose a dataset and inspect how each submission routes:
+    auto-merge (confidence ≥90%), review (60–90%), or reject (<60%).
     """)
-    st.info("**Real-world insight:** Text matching achieves 100% accuracy but requires barcode or packaging agreement to reach auto-merge threshold at scale.")
+    st.info(
+        "**These catalogs carry no barcodes and no packaging photos**, so the text "
+        "signal is the only evidence available. Nothing can auto-merge: writing to a "
+        "master catalog unreviewed requires corroboration, and one signal corroborates "
+        "nothing. Every row surfaced for review is a correct match, so the confidence "
+        "score separates well — it is the *evidence* that is thin, not the matching."
+    )
 
     col_ctrl, col_routing = st.columns([1.2, 2.4])
 
@@ -244,30 +274,52 @@ with tab_routing:
     #  python3 scripts/build_master_catalog.py --mode leipzig --dataset ...
     #  python3 scripts/build_intake_events.py --mode leipzig --dataset ...
     #  etc.)
-    try:
-        decisions, decision_rows = load("pipeline_decisions.csv")
-        cross, _ = load("cross_check_results.csv")
-        matches, _ = load("candidate_match_results.csv")
+    # Each dataset has its OWN run directory, so switching the radio switches
+    # the underlying catalog, events and decisions together. They used to share
+    # one set of filenames, which is how a 1,363-row amazon-google catalog
+    # ended up being scored against 1,092 abt-buy events.
+    decisions, decision_rows = load("pipeline_decisions.csv", "leipzig", dataset_choice)
+    lz_events, _ = load("intake_events.csv", "leipzig", dataset_choice)
+    cross, _ = load("cross_check_results.csv", "leipzig", dataset_choice)
 
-        # Filter to show only events from the selected dataset
-        event_ids = sorted(
-            [e for e in decisions if e.startswith(dataset_choice)],
-            key=lambda x: int(x.split("_")[1])
-        )
-
+    if not decision_rows:
+        with col_routing:
+            st.warning(
+                f"No run found for **{dataset_choice}**. Build it with:\n\n"
+                f"```bash\n"
+                f"python3 scripts/build_master_catalog.py --mode leipzig --dataset {dataset_choice}\n"
+                f"python3 scripts/build_intake_events.py --mode leipzig --dataset {dataset_choice}\n"
+                f"python3 scripts/stage03_cross_check.py --mode leipzig --dataset {dataset_choice}\n"
+                f"python3 scripts/stage04_candidate_match.py --mode leipzig --dataset {dataset_choice}\n"
+                f"python3 scripts/run_pipeline.py --mode leipzig --dataset {dataset_choice}\n"
+                f"```"
+            )
+    else:
+        n = len(decision_rows)
+        correct = sum(r["correct"] == "True" for r in decision_rows)
         with col_ctrl:
-            if event_ids:
-                event_id = st.selectbox("Choose an event", event_ids, key="routing_event")
-            else:
-                st.warning(f"No events for {dataset_choice}. Run: "
-                          f"`python3 scripts/build_master_catalog.py --mode leipzig --dataset {dataset_choice}`")
-                event_id = None
+            st.metric("Top-1 accuracy", f"{correct/n:.1%}",
+                      help="Share of submissions whose top candidate is the "
+                           "gold-standard match. Text signals only — these "
+                           "catalogs carry no barcodes and no packaging photos.")
+            routed = {}
+            for r in decision_rows:
+                routed[r["route"]] = routed.get(r["route"], 0) + 1
+            for route in ("auto_merge", "hold_for_review", "reject"):
+                if route in routed:
+                    got = [r for r in decision_rows if r["route"] == route]
+                    ok = sum(r["correct"] == "True" for r in got)
+                    st.caption(f"**{route.replace('_',' ')}** — {len(got)}/{n} "
+                               f"({ok}/{len(got)} correct)")
+
+            event_ids = sorted(decisions, key=lambda x: int(x.split("_")[-1]))
+            event_id = st.selectbox("Choose an event", event_ids, key="routing_event")
 
         if event_id:
             d = decisions[event_id]
-            e = events.get(event_id, {})
+            e = lz_events.get(event_id, {})
             c = cross.get(event_id, {})
-            m = matches.get(event_id, {})
+            m = {}
 
             col_master, col_decision = st.columns([1.2, 2.4])
 
@@ -347,18 +399,6 @@ with tab_routing:
                             st.write(f"- {ov}")
 
                 st.write(f"**Correct match: {'✓ Yes' if d.get('correct') == 'True' else '✗ No'}**")
-
-    except FileNotFoundError:
-        st.warning(
-            "No pipeline_decisions.csv found. Run the full pipeline:\n\n"
-            f"```bash\n"
-            f"python3 scripts/build_master_catalog.py --mode leipzig --dataset {dataset_choice}\n"
-            f"python3 scripts/build_intake_events.py --mode leipzig --dataset {dataset_choice}\n"
-            f"python3 scripts/stage03_cross_check.py\n"
-            f"python3 scripts/stage04_candidate_match.py\n"
-            f"python3 scripts/run_pipeline.py\n"
-            f"```"
-        )
 
 
 # --------------------------------------------------------------------------

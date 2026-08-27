@@ -43,7 +43,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
-from stage06_barcode_verify import BarcodeCheck
+from stage06_barcode_verify import BarcodeCheck, BarcodeVerdict
 
 # Routing bands, straight from Fig. 2 of the guide.
 AUTO_MERGE_MIN = 0.90
@@ -121,6 +121,7 @@ def route_event(
     top_score: float,
     runner_up_score: float,
     barcode: BarcodeCheck,
+    has_second_source: bool = True,
     llm_only: bool = False,
     llm_confidence: float = 0.0,
     alias_hit: bool = False,
@@ -132,13 +133,34 @@ def route_event(
         "barcode": barcode.score,
     }
 
-    confidence = (
-        W_SOURCE_AGREEMENT * source_agreement
-        + W_TEXT_MATCH * text_match
-        + W_BARCODE * barcode.score
-    )
+    # ABSENT IS NOT THE SAME AS CONTRADICTORY.
+    #
+    # Every signal used to contribute its weight unconditionally, so a missing
+    # barcode scored 0.0 -- numerically identical to three barcodes that
+    # actively disagree. On a text-only catalog (the Leipzig benchmarks carry
+    # no barcodes and no packaging photos) that put a hard ceiling of
+    # 0.35 x margin on EVERY row, below the 0.60 reject floor, so stage 07
+    # rejected all 1,092 events including the 958 it had matched correctly.
+    # A router that emits one constant label regardless of input is not
+    # routing.
+    #
+    # So the weighted mean is taken over the signals that are actually
+    # OBSERVABLE, and the penalty for missing evidence is applied where it
+    # belongs -- as a cap on how confident we are allowed to be (below), not
+    # as fake negative evidence.
+    available: dict[str, float] = {"text_match": W_TEXT_MATCH}
+    if has_second_source:
+        available["source_agreement"] = W_SOURCE_AGREEMENT
+    if barcode.verdict is not BarcodeVerdict.INSUFFICIENT:
+        available["barcode"] = W_BARCODE
+
+    total_weight = sum(available.values())
+    confidence = sum(w * signals[k] for k, w in available.items()) / total_weight
 
     overrides: list[str] = []
+    if len(available) < len(signals):
+        missing = sorted(set(signals) - set(available))
+        overrides.append("signals_unavailable:" + ",".join(missing))
 
     if alias_hit:
         # A previously human-approved correction for this exact input is real
@@ -150,6 +172,21 @@ def route_event(
 
     ceiling = 1.0
     reasons: list[str] = []
+
+    if len(available) < 2:
+        # Renormalising means a single strong signal now produces a high
+        # NUMBER, so the guardrail has to be restated as a rule rather than
+        # left to arithmetic: writing to a master catalog unreviewed requires
+        # corroboration, and one source corroborates nothing however good it
+        # looks. A perfect text match with no barcode and no second reading of
+        # the pack is exactly the case that merges two different products with
+        # similar names.
+        ceiling = min(ceiling, AUTO_MERGE_MIN - 1e-9)
+        overrides.append("single_signal_no_corroboration")
+        reasons.append(
+            f"only one signal observable ({next(iter(available))}) — "
+            "nothing independent to corroborate it"
+        )
 
     if barcode.is_veto:
         ceiling = min(ceiling, HOLD_MIN)

@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Generated pipeline artifacts.
+# Every one of these is reproducible by running the stages, and committing them
+# is how a 1,363-row amazon-google catalog ended up in the repo next to 1,092
+# abt-buy events -- a mixture that silently invalidates any score computed from
+# it. Build them locally instead; see README for the commands.
+data/synthetic/
+data/leipzig/
+*.db
+
+# Leipzig benchmark source data (~9MB, downloaded from dbs.uni-leipzig.de).
+# Fetch with scripts/fetch_benchmarks.py rather than vendoring it.
+data/benchmark/*.zip
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/

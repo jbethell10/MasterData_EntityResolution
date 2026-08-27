@@ -16,6 +16,7 @@ finding: it tells you which of your two noisy sources is the better search
 key, which a real system would use to weight the two inputs during
 disambiguation (stage 05).
 """
+import argparse
 import csv
 from pathlib import Path
 
@@ -28,16 +29,20 @@ from rapidfuzz.distance import Levenshtein
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ocr_extract import is_valid_ean13  # noqa: E402
 
+import paths  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
-EVENTS_PATH = ROOT / "data" / "intake_events.csv"
-DB_PATH = ROOT / "data" / "mder.db"
-OUT_PATH = ROOT / "data" / "candidate_match_results.csv"
+
+# Default to the synthetic run; main() repoints these from --mode/--dataset.
+EVENTS_PATH = paths.run_dir("synthetic") / "intake_events.csv"
+DB_PATH = paths.db_path("synthetic")
+OUT_PATH = paths.run_dir("synthetic") / "candidate_match_results.csv"
 
 TOP_K = 3
 
-def load_catalog():
+def load_catalog(db_path=None):
     import sqlite3
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(db_path or DB_PATH)
     rows = conn.execute(
         "SELECT master_id, gtin, brand, product_name, quantity FROM master_catalog"
     ).fetchall()
@@ -235,6 +240,14 @@ def detect_signal_conflict(query_brand, query_name, query_gtin, catalog):
     return None
 
 def main():
+    global EVENTS_PATH, DB_PATH, OUT_PATH
+    ap = argparse.ArgumentParser()
+    paths.add_mode_args(ap)
+    run_dir, db = paths.resolve(ap.parse_args())
+    EVENTS_PATH = run_dir / "intake_events.csv"
+    DB_PATH = db
+    OUT_PATH = run_dir / "candidate_match_results.csv"
+
     catalog = load_catalog()
     index = build_vector_index(catalog)   # fit once, reuse for every query
     with open(EVENTS_PATH, newline="") as f:

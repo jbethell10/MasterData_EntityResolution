@@ -31,9 +31,11 @@ sys.path.insert(0, str(ROOT))
 
 from normalize import normalize_text, normalize_quantity  # noqa: E402
 
-DB_PATH = ROOT.parent / "data" / "mder.db"
+import paths  # noqa: E402
+
+DB_PATH = paths.db_path("synthetic")     # repointed in main()
 IMG_DIR = ROOT.parent / "images"
-OUT_PATH = ROOT.parent / "data" / "intake_events.csv"
+OUT_PATH = paths.run_dir("synthetic") / "intake_events.csv"
 
 EVENT_SEED = 99
 
@@ -110,6 +112,10 @@ def main():
     parser.add_argument("--limit", type=int, default=None,
                         help="cap the number of events (for testing)")
     args = parser.parse_args()
+
+    global DB_PATH, OUT_PATH
+    run_dir, DB_PATH = paths.resolve(args)
+    OUT_PATH = run_dir / "intake_events.csv"
 
     if args.mode == "synthetic":
         events = build_synthetic()

@@ -246,31 +246,72 @@ another product. A guardrail that blocks everything isn't a guardrail, it's an o
 
 ## Real Data Validation (end-to-end on Leipzig)
 
-The pipeline runs stages 02–08 on **1,092 real e-commerce product pairs** from the Abt–Buy Leipzig benchmark (2010), validating on actual data without requiring packaged images. To run:
+The pipeline runs stages 03–08 on real e-commerce product pairs from the Leipzig
+benchmarks (2010). Each run writes to its own directory, so runs cannot overwrite
+each other:
 
 ```bash
-python3 scripts/build_master_catalog.py --mode leipzig --dataset abt-buy
-python3 scripts/build_intake_events.py --mode leipzig --dataset abt-buy
-python3 scripts/stage03_cross_check.py
-python3 scripts/stage04_candidate_match.py
-python3 scripts/run_pipeline.py
+python3 scripts/build_master_catalog.py  --mode leipzig --dataset abt-buy
+python3 scripts/build_intake_events.py   --mode leipzig --dataset abt-buy
+python3 scripts/stage03_cross_check.py   --mode leipzig --dataset abt-buy
+python3 scripts/stage04_candidate_match.py --mode leipzig --dataset abt-buy
+python3 scripts/run_pipeline.py          --mode leipzig --dataset abt-buy
 ```
 
-**Results:**
+**Results (text signals only — these catalogs carry no barcodes and no photos):**
 
-| Metric | Value |
+| | Abt–Buy | Amazon–Google |
+|---|---|---|
+| Submissions | 1,092 | 1,291 |
+| Catalog size | 1,081 | 1,363 |
+| **Top-1 accuracy** | **87.7%** (958) | **80.2%** (1,035) |
+| Top-3 recall | 95% | 95% |
+| Surfaced for review | 44 (**44/44 correct**) | 103 (**103/103 correct**) |
+| Auto-merged | 0 | 0 |
+| Incorrect auto-merges | 0 | 0 |
+
+### Correction: an earlier version of this table claimed 100%
+
+It was a ground-truth leak. `benchmark_to_intake()` copied the catalog record's
+own GTIN into the supplier submission, so `gtin_similarity()` scored an exact
+barcode match against exactly one row — the correct one — on every event, worth
+0.30 of the combined score. The pipeline was being handed the answer.
+
+The measurement that settles it, on a consistent build:
+
+| | Top-1 |
 |---|---|
-| Real product pairs | 1,092 (Abt–Buy) |
-| Text matching accuracy | 100.0% |
-| Correct matches | 1,092/1,092 |
-| Auto-merge decisions | 0/1,092 |
-| Incorrect auto-merges | 0 |
+| Supplier submits master's own GTIN (the leak) | 1092/1092 — 100.0% |
+| GTIN withheld — real accuracy | 958/1092 — **87.7%** |
 
-**What happened:** all 1,092 pairs were correctly matched by stage 04's text engine, but all routed to **reject** in stage 07 because **text matching alone cannot drive confidence above 0.60 without barcode or artwork signals**. The weighted score is `0.25 × 0.0 (source agreement) + 0.35 × text_match + 0.40 × 0.0 (barcode) ≈ 0.35`, which is below the hold threshold.
+87.7% independently corroborates the 85.1% top-1 the benchmark console computes
+for this dataset by a separate code path. The leak is now closed (Leipzig events
+carry no barcode, which is truthful to the source data) and guarded by
+`test_no_supplier_field_is_a_perfect_copy_of_the_master`.
 
-**Why this is the honest answer:** The synthetic case works (100% auto-merge on 20 events) because it has three strong signals + a trivial 30-product catalog. Real deployment reveals the requirement: **you need at least two of (artwork, barcode, supplier field agreement) to drive decisions at scale**. This is operationally useful: it doesn't say "matching is broken," it says "your text engine works perfectly, but you need data sources (images or barcodes) to route at the confidence levels you need."
+Worth noting how quiet the failure was: every accuracy number went **up**, all
+tests stayed green, and the dashboard looked healthier. Nothing about a leak
+announces itself, which is why the guard has to be an explicit invariant rather
+than a hoped-for smell.
 
-**The scripts can switch modes mid-pipeline** — `--mode synthetic` uses artwork images (default, 20 events), `--mode leipzig` uses real benchmark data without images (1,000+ events). Tests cover both and pass end-to-end.
+### Why nothing auto-merges, and why that is correct
+
+With no barcode and no packaging photo, exactly one signal is observable. The
+router refuses to auto-merge on a single uncorroborated signal, however strong —
+a perfect text match with nothing to check it against is precisely the case that
+merges two different products with similar names.
+
+Note what it does **not** say: every one of the 44 rows it surfaced for review was
+a correct match. The confidence score separates cleanly (AUC 0.907 for the text
+margin). It is the *evidence* that is thin, not the matching.
+
+**Known miscalibration:** `MARGIN_SATURATION = 0.40` in stage 07 was tuned on the
+30-product synthetic catalog. On 1,081 products the median margin for a *correct*
+match is 0.078, so the signal is squashed into the bottom of its range and only 4%
+of rows clear the review threshold — 914 correct matches are rejected rather than
+queued. The signal is good (AUC 0.907); the constant mapping it to a confidence
+band is not. Calibrating margin → P(correct) against a held-out split is the next
+piece of work.
 
 ### Still honestly outstanding
 - `--mode real` (live Open Food Facts) and real product photos remain **unrun**.

@@ -160,18 +160,18 @@
         <h1>Master Data Entity Resolution</h1>
         <p>Retail Product Matching System — Complete 8-Stage Pipeline</p>
         <div class="metadata">
-            <span>📅 Date: August 26, 2026</span>
-            <span>🏢 Repository: <code>jbethell10/MasterData_EntityResolution</code></span>
-            <span>✅ Status: Production Ready</span>
+            <span>Date: 26&ndash;27 August 2026</span>
+            <span>Repository: <code>jbethell10/MasterData_EntityResolution</code></span>
+            <span>Status: audited &mdash; leak found and corrected</span>
         </div>
     </div>
 
     <!-- EXECUTIVE SUMMARY -->
     <div class="section">
         <h2>Executive Summary</h2>
-        <p>A complete 8-stage entity resolution pipeline for matching retail product submissions against a master catalog. Built with honest validation on real benchmark data (1,000+ products), 45 passing tests, and an interactive Streamlit dashboard. The system achieves <span class="metric success">100% text matching accuracy</span> on real data, with clear visibility into what works and what requires human review.</p>
+        <p>A complete 8-stage entity resolution pipeline for matching retail product submissions against a master catalog. Built with honest validation on real benchmark data (1,000+ products), 50 passing tests, and an interactive Streamlit dashboard. The system achieves <span class="metric success">87.7% top-1 accuracy</span> on 1,092 real product pairs using text signals alone, independently corroborated by a separate benchmark code path (85.1%).</p>
         <div class="highlight">
-            <strong>Key Finding:</strong> Text matching alone achieves perfect accuracy but cannot drive auto-merge decisions at scale without barcode or packaging agreement signals. This honest limitation is documented and drives the system's routing decisions.
+            <strong>Key Finding:</strong> An earlier build reported 100% accuracy on this data. That was a <strong>ground-truth leak</strong> &mdash; the supplier submission carried the master record's own barcode, so the matcher was handed the answer on every row. With the leak closed the real figure is 87.7%, and nothing auto-merges: one uncorroborated signal is not enough to write to a master catalog unreviewed. Finding and correcting this is the most useful thing in the project.
         </div>
     </div>
 
@@ -237,13 +237,13 @@
             <div class="grid-item">
                 <h4>Abt-Buy Benchmark</h4>
                 <p><span class="metric">1,092 product pairs</span></p>
-                <p><span class="success">100.0% text accuracy</span></p>
-                <p><span class="warning">0% auto-merge</span> (text signal insufficient)</p>
+                <p><span class="success">87.7% top-1</span> (958/1,092)</p>
+                <p><span class="warning">0 auto-merged</span> &mdash; single signal, no corroboration</p>
             </div>
             <div class="grid-item">
                 <h4>Amazon-Google Benchmark</h4>
                 <p><span class="metric">1,363 master products</span></p>
-                <p><span class="success">73.2% top-1 accuracy</span></p>
+                <p><span class="success">80.2% top-1</span> (1,035/1,291)</p>
                 <p>F1: 0.616 (tuned weights)</p>
             </div>
         </div>
@@ -306,6 +306,69 @@
             <li><strong>Problem taxonomy:</strong> Distinguishes supplier data-entry errors from resolution ambiguity—different owners, different fixes</li>
             <li><strong>Human-approval-only:</strong> Never learns from unreviewed auto-merges (prevents drift)</li>
         </ul>
+    </div>
+
+
+    <!-- AUDIT -->
+    <div class="section">
+        <h2>Audit: five defects found and fixed</h2>
+        <p>The headline result was re-verified from scratch before any further work. Five defects
+        surfaced, four of them invisible from the outside because every one made the numbers look
+        <em>better</em>.</p>
+
+        <table>
+            <thead><tr><th>#</th><th>Defect</th><th>Effect</th><th>Fix</th></tr></thead>
+            <tbody>
+                <tr>
+                    <td>1</td>
+                    <td><strong>Ground-truth leak.</strong> The supplier submission carried the master
+                        record's own GTIN on all 1,092 events.</td>
+                    <td>Reported 100% top-1; real figure 87.7%.</td>
+                    <td>Leipzig events now carry no barcode &mdash; truthful to source data, which has
+                        none. Guarded by a leak-canary test.</td>
+                </tr>
+                <tr>
+                    <td>2</td>
+                    <td><strong>Mismatched artifacts.</strong> The committed database held
+                        amazon-google (1,363 rows) while the events file held abt-buy (1,092).</td>
+                    <td>Published number did not reproduce from the repo.</td>
+                    <td>Each run gets its own directory and its own database.</td>
+                </tr>
+                <tr>
+                    <td>3</td>
+                    <td><strong>14-digit barcodes.</strong> Synthetic GTINs were one digit too long
+                        for an EAN-13.</td>
+                    <td>Stage 06 rejected every barcode as unparseable while stage 04 scored the same
+                        strings as perfect matches.</td>
+                    <td>Proper 12-digit body plus computed check digit, with a per-dataset prefix.</td>
+                </tr>
+                <tr>
+                    <td>4</td>
+                    <td><strong>Run collision.</strong> Both modes wrote the same filenames.</td>
+                    <td>The benchmark run overwrote the synthetic run, so the dashboard's artwork tab
+                        lost its images.</td>
+                    <td>Per-mode output directories; the artwork tab works again.</td>
+                </tr>
+                <tr>
+                    <td>5</td>
+                    <td><strong>Absent treated as contradictory.</strong> A missing barcode scored
+                        0.0 &mdash; numerically identical to three barcodes that disagree.</td>
+                    <td>Every one of 1,092 rows was rejected, including the 958 matched correctly. A
+                        router emitting one constant label is not routing.</td>
+                    <td>Confidence is a weighted mean over <em>observable</em> signals; missing
+                        evidence caps confidence instead of faking negative evidence.</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div class="highlight">
+            <strong>Why this matters more than the pipeline itself.</strong> A leak does not announce
+            itself. Accuracy went up, the tests stayed green, and the dashboard looked healthier. The
+            only thing that caught it was refusing to accept a number that was too clean for the
+            problem &mdash; 100% on a 1,081-product catalog, when an independent code path scored the
+            same engine at 85.1%. Two measurements of the same thing disagreeing is the signal;
+            everything else followed from pulling that thread.
+        </div>
     </div>
 
     <!-- KEY RESULTS -->
@@ -373,7 +436,7 @@
         </div>
 
         <h3>Test Coverage</h3>
-        <p><span class="metric success">45 tests passing</span> (all offline, no API key required)</p>
+        <p><span class="metric success">50 tests passing</span> (all offline, no API key required)</p>
         <ul>
             <li>Stages 01–02: OCR accuracy, normalization correctness</li>
             <li>Stages 03–04: Cross-check logic, candidate ranking</li>
@@ -392,7 +455,7 @@
 
         <h3>What Works</h3>
         <ul>
-            <li><strong>Text matching at scale:</strong> 100% accuracy on real e-commerce data (1,000+ products)</li>
+            <li><strong>Text matching at scale:</strong> 87.7% / 80.2% top-1 on two real e-commerce benchmarks, 95% top-3 recall on both</li>
             <li><strong>Signal independence:</strong> Four unrelated signals (text/phonetic/semantic/barcode) stay uncorrelated</li>
             <li><strong>Routing decisions:</strong> 0% incorrect auto-merges on real data; confidence thresholds are predictive</li>
             <li><strong>Learning loop:</strong> Human-approved aliases boost confidence 10% on re-submission</li>
@@ -467,7 +530,7 @@
             <li><strong>Vision:</strong> Tesseract 5.5.3 OCR with two-pass processing</li>
             <li><strong>Matching:</strong> RapidFuzz + jellyfish + scikit-learn TfidfVectorizer</li>
             <li><strong>LLM:</strong> Claude API (stage 05, lazy invocation, offline-safe)</li>
-            <li><strong>Tests:</strong> 45 pytest tests (all offline, no credentials needed)</li>
+            <li><strong>Tests:</strong> 50 pytest tests (all offline, no credentials needed), including five leak/isolation invariants added after the audit</li>
             <li><strong>CI/CD:</strong> GitHub Actions (linting, type checking, test suite)</li>
         </ul>
     </div>

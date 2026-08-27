@@ -9,8 +9,10 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-IN_PATH = ROOT / "data" / "supplier_feed.csv"
-OUT_PATH = ROOT / "data" / "supplier_feed_normalized.csv"
+import sys as _sys; _sys.path.insert(0, str(Path(__file__).resolve().parent))
+import paths  # noqa: E402
+IN_PATH = paths.run_dir("synthetic") / "supplier_feed.csv"
+OUT_PATH = paths.run_dir("synthetic") / "supplier_feed_normalized.csv"
 
 QTY_RE = re.compile(r"([\d.]+)\s*(kg|g|l|ml)", re.IGNORECASE)
 

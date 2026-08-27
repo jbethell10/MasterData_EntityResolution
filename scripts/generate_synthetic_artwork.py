@@ -24,7 +24,9 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from fonts import active_font_paths, load_label_fonts
 
 ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = ROOT / "data" / "mder.db"
+import sys as _sys; _sys.path.insert(0, str(Path(__file__).resolve().parent))
+import paths  # noqa: E402
+DB_PATH = paths.run_dir("synthetic") / "mder.db"
 IMG_DIR = ROOT / "images"
 
 random.seed(42)

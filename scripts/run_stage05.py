@@ -27,8 +27,10 @@ from stage05_disambiguate import (  # noqa: E402
 )
 
 ROOT = Path(__file__).resolve().parent.parent
-EVENTS_PATH = ROOT / "data" / "intake_events.csv"
-OUT_PATH = ROOT / "data" / "stage05_results.csv"
+import sys as _sys; _sys.path.insert(0, str(Path(__file__).resolve().parent))
+import paths  # noqa: E402
+EVENTS_PATH = paths.run_dir("synthetic") / "intake_events.csv"
+OUT_PATH = paths.run_dir("synthetic") / "stage05_results.csv"
 
 
 def to_candidates(ranked, catalog_by_id) -> list[Candidate]:

@@ -26,20 +26,28 @@ from stage04_candidate_match import (  # noqa: E402
 from stage06_barcode_verify import verify_three_way  # noqa: E402
 from stage07_confidence_route import Route, route_event  # noqa: E402
 
+import paths  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
-EVENTS_PATH = ROOT / "data" / "intake_events.csv"
-CROSS_PATH = ROOT / "data" / "cross_check_results.csv"
-OUT_PATH = ROOT / "data" / "pipeline_decisions.csv"
 
 
 def main():
     ap = argparse.ArgumentParser()
+    paths.add_mode_args(ap)
     ap.add_argument("--demo-alias", action="store_true",
                     help="approve one held row, then re-run it to show the alias cache hit")
-    ap.add_argument("--reset-log", action="store_true", default=True)
+    # Was --reset-log with action="store_true" AND default=True, which meant it
+    # was unconditionally True and the flag could never turn resetting off.
+    ap.add_argument("--keep-log", action="store_true",
+                    help="append to the existing audit log instead of clearing it")
     args = ap.parse_args()
 
-    catalog = load_catalog()
+    run_dir, db = paths.resolve(args)
+    EVENTS_PATH = run_dir / "intake_events.csv"
+    CROSS_PATH = run_dir / "cross_check_results.csv"
+    OUT_PATH = run_dir / "pipeline_decisions.csv"
+
+    catalog = load_catalog(db)
     catalog_by_id = {r[0]: r for r in catalog}
     index = build_vector_index(catalog)
 
@@ -48,8 +56,8 @@ def main():
     with open(CROSS_PATH, newline="") as f:
         cross = {r["event_id"]: r for r in csv.DictReader(f)}
 
-    conn = audit.connect()
-    if args.reset_log:
+    conn = audit.connect(db)
+    if not args.keep_log:
         conn.execute("DELETE FROM audit_log")
         conn.commit()
 
@@ -60,6 +68,15 @@ def main():
         xc = cross[eid]
 
         # --- signal 1: did the two independent readings agree with each other?
+        #
+        # Only meaningful when there IS a second reading. The Leipzig
+        # benchmarks are text-only catalogs with no packaging photos, so every
+        # artwork_* field is empty and "agreement" would be scored 0.00 --
+        # indistinguishable from a pack that actively contradicts the
+        # submission. Stage 07 needs to be told which of those it is.
+        has_second_source = any(
+            e.get(f"artwork_{f}") for f in ("brand", "product_name", "gtin")
+        )
         agree_fields = sum(
             xc[f"{f}_artwork_vs_supplier"] == "True" for f in ("brand", "quantity", "gtin")
         )
@@ -86,7 +103,8 @@ def main():
         decision = route_event(
             source_agreement=source_agreement,
             top_score=top_score, runner_up_score=runner_up,
-            barcode=barcode, alias_hit=bool(hit),
+            barcode=barcode, has_second_source=has_second_source,
+            alias_hit=bool(hit),
         )
 
         problem_class = audit.log_decision(

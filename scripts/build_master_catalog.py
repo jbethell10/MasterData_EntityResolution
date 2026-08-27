@@ -24,7 +24,13 @@ import sqlite3
 import sys
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "mder.db"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import paths  # noqa: E402
+
+# Repointed by main() from --mode/--dataset. Each run mode gets its own
+# database: a single shared mder.db is what let a catalog built for one
+# dataset sit next to intake events generated from another.
+DB_PATH = paths.db_path("synthetic")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS master_catalog (
@@ -181,6 +187,7 @@ def build_from_leipzig(conn: sqlite3.Connection, dataset: str) -> int:
     return len(master)
 
 def main():
+    global DB_PATH
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["seed", "real", "leipzig"], default="seed",
                         help="seed: synthetic 30-row catalog; "
@@ -190,6 +197,12 @@ def main():
                         default="amazon-google",
                         help="which Leipzig benchmark (for --mode leipzig)")
     args = parser.parse_args()
+
+    # seed/real both populate the "synthetic" run; leipzig gets a per-dataset one.
+    if args.mode == "leipzig":
+        DB_PATH = paths.db_path("leipzig", args.dataset)
+    else:
+        DB_PATH = paths.db_path("synthetic")
 
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)

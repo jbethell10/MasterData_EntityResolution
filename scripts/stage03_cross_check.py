@@ -14,12 +14,15 @@ honestly flags, per field, which pairs of sources agree and which don't, so
 a human reviewer (or the confidence/routing stage) has a clean signal to
 work from.
 """
+import argparse
 import csv
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-IN_PATH = ROOT / "data" / "intake_events.csv"
-OUT_PATH = ROOT / "data" / "cross_check_results.csv"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import paths  # noqa: E402
 
 FIELD_PAIRS = [
     ("brand", "artwork_norm_brand", "supplier_norm_brand", "master_norm_brand"),
@@ -80,6 +83,12 @@ def cross_check_event(row: dict) -> dict:
     return result
 
 def main():
+    ap = argparse.ArgumentParser()
+    paths.add_mode_args(ap)
+    run_dir, _ = paths.resolve(ap.parse_args())
+    IN_PATH = run_dir / "intake_events.csv"
+    OUT_PATH = run_dir / "cross_check_results.csv"
+
     with open(IN_PATH, newline="") as f:
         rows = list(csv.DictReader(f))
 

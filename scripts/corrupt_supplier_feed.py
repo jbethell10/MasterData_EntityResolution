@@ -11,8 +11,10 @@ import sqlite3
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = ROOT / "data" / "mder.db"
-OUT_PATH = ROOT / "data" / "supplier_feed.csv"
+import sys as _sys; _sys.path.insert(0, str(Path(__file__).resolve().parent))
+import paths  # noqa: E402
+DB_PATH = paths.run_dir("synthetic") / "mder.db"
+OUT_PATH = paths.run_dir("synthetic") / "supplier_feed.csv"
 
 random.seed(7)
 

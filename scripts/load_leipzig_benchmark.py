@@ -28,7 +28,21 @@ from typing import Literal
 
 ROOT = Path(__file__).resolve().parent.parent
 BENCHMARK = ROOT / "data" / "benchmark"
-DB_PATH = ROOT / "data" / "mder.db"
+
+
+# Distinct GS1-style prefixes so a barcode carries which dataset it came from.
+_DATASET_PREFIX = {"Amazon": "801", "Google": "801", "Abt": "802", "Buy": "802"}
+
+
+def ean13_check_digit(body12: str) -> str:
+    total = sum(int(d) * (3 if i % 2 else 1) for i, d in enumerate(body12))
+    return str((10 - total % 10) % 10)
+
+
+def make_gtin(prefix: str, seq: int) -> str:
+    """A real 13-digit EAN-13: 12 body digits plus a computed check digit."""
+    body = f"{prefix}{seq:09d}"          # 3 + 9 = 12 digits
+    return body + ean13_check_digit(body)
 
 
 def load_csv(path: Path, encoding="latin-1") -> list[dict]:
@@ -96,17 +110,28 @@ def benchmark_to_master_catalog(
     We synthesize GTINs as fake barcodes since the benchmark doesn't have
     real product codes. This is for stage 07 routing validation only.
     """
+    prefix = _DATASET_PREFIX[source_name]
     rows = []
     for i, (orig_id, record) in enumerate(supplier_side.items(), start=1):
         # Use title or name field, depending on source
         title = record.get("name") or record.get("title", "Unknown")
         mfg = record.get("manufacturer", "")
 
-        # Synthesise a GTIN so stage 06 has something to validate
-        # (real benchmarks don't have barcodes)
-        fake_gtin = f"800{i:010d}7"  # plausible EAN-13
-
-        rows.append((i, fake_gtin, mfg, title, ""))
+        # The catalog side gets a synthetic but STRUCTURALLY VALID barcode, so
+        # stage 06 can parse it rather than rejecting every row.
+        #
+        # The previous f"800{i:010d}7" was 14 characters, one too long for an
+        # EAN-13, so is_valid_ean13() failed on all 1,092 rows and stage 06
+        # reported insufficient_data everywhere -- while stage 04 was scoring
+        # the very same string as a perfect GTIN match worth 0.30. Two stages
+        # disagreeing about whether a field is usable is worse than either
+        # answer alone.
+        #
+        # The prefix is per-dataset because the old index-only scheme gave
+        # abt-buy row 436 and amazon-google row 436 the identical barcode,
+        # so a catalog from one dataset would happily "verify" against events
+        # from the other.
+        rows.append((i, make_gtin(prefix, i), mfg, title, ""))
     return rows
 
 
@@ -154,11 +179,27 @@ def benchmark_to_intake(
             "supplier_raw_brand": mfg,
             "supplier_raw_product_name": title,
             "supplier_raw_quantity": "",
-            "supplier_raw_gtin": master_row[1],  # use master's synthetic GTIN as "submission"
+            # The supplier submits NO barcode.
+            #
+            # This previously copied master_row[1] -- the catalog record's own
+            # GTIN -- into the submission, which handed stage 04 the answer:
+            # gtin_similarity() scored an exact match of 1.0 against exactly
+            # one catalog row, worth 0.30 of the combined score, for every
+            # single event. That produced a "100% top-1 accuracy on real data"
+            # figure that measured nothing but the leak. Withholding it, the
+            # same engine scores 87.7% -- which is a real result, and matches
+            # the independently-computed 85.1% top-1 the benchmark console
+            # reports for this dataset.
+            #
+            # Empty is also the honest representation: the Leipzig benchmarks
+            # are text-only catalogs. They contain no barcodes, so the pipeline
+            # should run with that signal genuinely absent and report what its
+            # absence costs.
+            "supplier_raw_gtin": "",
             "supplier_norm_brand": mfg.lower().strip() if mfg else "",
             "supplier_norm_product_name": " ".join(title.lower().split()),
             "supplier_norm_quantity": "",
-            "supplier_norm_gtin": master_row[1],
+            "supplier_norm_gtin": "",
             # Since we don't have real images, leave artwork fields empty but include them
             "artwork_brand": "",
             "artwork_product_name": "",

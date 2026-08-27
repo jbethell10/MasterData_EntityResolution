@@ -23,7 +23,9 @@ The Streamlit app (`streamlit run app.py`) now has **three tabs** instead of two
   - **Overrides applied**: which guardrails fired (if any)
   - **Correctness**: whether this was a true match or not
 
-**Key finding:** All 1,092 events in Abt-Buy are correctly matched by the text engine (100% accuracy) but route to **reject** because text signal alone (0.35) is below the 0.60 hold threshold. This is honest validation: the engine works, but it needs another data source (barcode or artwork) to drive routing decisions at scale.
+**Key finding:** Top-1 accuracy is **87.7%** on Abt-Buy (958/1,092) and **80.2%** on Amazon-Google (1,035/1,291), text signals only. Nothing auto-merges, because with no barcode and no packaging photo there is exactly one observable signal and the router refuses to write to the catalog on a single uncorroborated signal. Every row it does surface for review is a correct match.
+
+> An earlier version of this document claimed 100%. That was a ground-truth leak: the supplier submission carried the master record's own GTIN. See README for the full correction.
 
 ## Tab 3: Benchmark Console (Stage 04 Tuning)
 - Original tab: live weight sliders on Leipzig text-matching engine
@@ -40,9 +42,9 @@ Run the pipeline for the dataset you want:
 # For Abt-Buy (1,081 products)
 python3 scripts/build_master_catalog.py --mode leipzig --dataset abt-buy
 python3 scripts/build_intake_events.py --mode leipzig --dataset abt-buy
-python3 scripts/stage03_cross_check.py
-python3 scripts/stage04_candidate_match.py
-python3 scripts/run_pipeline.py
+python3 scripts/stage03_cross_check.py --mode leipzig --dataset abt-buy
+python3 scripts/stage04_candidate_match.py --mode leipzig --dataset abt-buy
+python3 scripts/run_pipeline.py --mode leipzig --dataset abt-buy
 streamlit run app.py
 ```
 
@@ -51,9 +53,9 @@ or for Amazon-Google (1,363 products):
 ```bash
 python3 scripts/build_master_catalog.py --mode leipzig --dataset amazon-google
 python3 scripts/build_intake_events.py --mode leipzig --dataset amazon-google
-python3 scripts/stage03_cross_check.py
-python3 scripts/stage04_candidate_match.py
-python3 scripts/run_pipeline.py
+python3 scripts/stage03_cross_check.py --mode leipzig --dataset amazon-google
+python3 scripts/stage04_candidate_match.py --mode leipzig --dataset amazon-google
+python3 scripts/run_pipeline.py --mode leipzig --dataset amazon-google
 streamlit run app.py
 ```
 
@@ -78,8 +80,8 @@ streamlit run app.py
 
 ## What This Shows
 
-**Before:** "The synthetic case shows 100% accuracy and auto-merge on 20 events."
+**Before:** "100% accuracy on real data" — which turned out to be the answer key being copied into the supplier submission.
 
-**Now:** "The text matching engine achieves 100% accuracy on real 1,000+ product benchmarks, BUT text signal alone cannot drive auto-merge without barcode or artwork data. Here's exactly which routing decisions fired, why they fired, and what would need to change to auto-merge."
+**Now:** "87.7% top-1 on 1,092 real pairs with the leak closed, corroborated by an independently-computed 85.1% from the benchmark console. Nothing auto-merges because one signal corroborates nothing — and every row surfaced for review is correct."
 
 This is portfolio-grade validation: it shows the system works, acknowledges what's missing, and provides reproducible evidence on real data.
