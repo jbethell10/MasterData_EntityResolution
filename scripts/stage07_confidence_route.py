@@ -92,14 +92,34 @@ class RoutingDecision:
         }
 
 
-def text_match_signal(top_score: float, runner_up_score: float) -> float:
+def text_match_signal(top_score: float, runner_up_score: float,
+                      calibrator=None) -> float:
     """Confidence that retrieval picked a *distinguishable* winner.
 
     Scored on the margin, not the absolute score: a 0.95 winner with a 0.94
     runner-up has not identified anything, while a 0.70 winner with a 0.20
     runner-up clearly has.
+
+    With a CALIBRATOR the margin is mapped to an actual probability that the
+    top candidate is correct, fitted on labelled pairs from this catalog. That
+    is what makes the routing bands mean what they claim: >=0.90 becomes ">=90%
+    of submissions scored this way are correct" rather than "the margin was
+    over 0.36".
+
+    Without one it falls back to margin / MARGIN_SATURATION. That constant was
+    set against a 30-product catalog where margins are wide. On 1,081 products
+    the median margin for a CORRECT match is 0.078, so the fallback squashes
+    almost everything to the bottom of the range -- measured on held-out
+    abt-buy it scores ECE 0.656 against the calibrated 0.036, and rejects 451
+    correct matches where the calibrated version rejects 26.
+
+    The fallback is kept rather than replaced by a default curve because a
+    curve fitted elsewhere does not transfer cleanly (see calibration.save).
+    An obviously-crude mapping is safer than a precise-looking wrong one.
     """
     margin = max(0.0, top_score - runner_up_score)
+    if calibrator is not None:
+        return float(min(1.0, max(0.0, calibrator(margin))))
     return min(1.0, margin / MARGIN_SATURATION)
 
 
@@ -125,8 +145,9 @@ def route_event(
     llm_only: bool = False,
     llm_confidence: float = 0.0,
     alias_hit: bool = False,
+    calibrator=None,
 ) -> RoutingDecision:
-    text_match = text_match_signal(top_score, runner_up_score)
+    text_match = text_match_signal(top_score, runner_up_score, calibrator)
     signals = {
         "source_agreement": source_agreement,
         "text_match": text_match,

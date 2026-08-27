@@ -305,13 +305,83 @@ Note what it does **not** say: every one of the 44 rows it surfaced for review w
 a correct match. The confidence score separates cleanly (AUC 0.907 for the text
 margin). It is the *evidence* that is thin, not the matching.
 
-**Known miscalibration:** `MARGIN_SATURATION = 0.40` in stage 07 was tuned on the
-30-product synthetic catalog. On 1,081 products the median margin for a *correct*
-match is 0.078, so the signal is squashed into the bottom of its range and only 4%
-of rows clear the review threshold — 914 correct matches are rejected rather than
-queued. The signal is good (AUC 0.907); the constant mapping it to a confidence
-band is not. Calibrating margin → P(correct) against a held-out split is the next
-piece of work.
+## Calibrated confidence
+
+The routing bands are stated as confidence — auto-merge at ≥0.90, review at
+0.60–0.90. That only means something if 0.90 really is "90% of rows scored this
+way are correct". It wasn't: confidence was `margin / MARGIN_SATURATION`, and
+that constant was set against the 30-product catalog. On 1,081 products the
+median margin for a *correct* match is 0.078, so the mapping squashed almost
+everything to the bottom of its range.
+
+So the mapping is now **fitted on labelled pairs** rather than guessed.
+Platt scaling (a 2-parameter logistic, hand-rolled in `scripts/calibration.py`
+so the numbers deciding every threshold are auditable) against isotonic
+regression, both scored on data they never saw:
+
+| fit on half of Abt–Buy, score the other half | Brier ↓ | log loss ↓ | ECE ↓ | worst bin ↓ | AUC |
+|---|---|---|---|---|---|
+| `margin / 0.40` (previous) | 0.530 | 1.544 | 0.656 | 0.794 | 0.908 |
+| **Platt (fitted)** | **0.076** | **0.247** | **0.036** | **0.137** | 0.908 |
+| Isotonic (fitted) | 0.077 | 0.296 | 0.039 | 0.667 | 0.902 |
+
+AUC is unchanged by design — calibration is monotone, so it cannot alter the
+ranking, only what the numbers *mean*. Platt is chosen over isotonic on the
+worst-bin figure (0.137 vs 0.667): isotonic follows noise in the sparse tail,
+which is exactly where an overconfident band does damage.
+
+### Calibration does not fully transfer between catalogs
+
+This is the question that decides whether the fix is real or just a better-dressed
+version of the same mistake. Fitting a curve on Abt–Buy and applying it to
+Amazon–Google:
+
+| scored on all of Amazon–Google | Brier ↓ | ECE ↓ |
+|---|---|---|
+| `margin / 0.40` | 0.452 | 0.557 |
+| Platt fitted on **Abt–Buy** | 0.132 | 0.078 |
+| Platt fitted on **Amazon–Google** | **0.119** | **0.026** |
+
+Far better than the constant, but measurably overconfident — it claims 0.65 where
+the true rate is 0.49. The two fitted slopes differ by 2.7× (63.3 vs 23.4).
+
+So **calibration is per-catalog**, stored as `calibration.json` inside each run
+directory. A run without one falls back to the uncalibrated mapping rather than
+borrowing another catalog's curve. Shipping one global curve would have been the
+original `MARGIN_SATURATION` error with more decimal places.
+
+```bash
+python3 scripts/run_calibration.py               # full report
+python3 scripts/run_calibration.py --fit abt-buy # fit and save for that catalog
+```
+
+### What it changes operationally
+
+Held-out half of Abt–Buy, with stage 07's corroboration rule in force:
+
+| | review queue | rejected | correct matches thrown away |
+|---|---|---|---|
+| `margin / 0.40` | 24 (100% correct) | 522 | **451** |
+| Platt calibrated | 947 (94.1% correct) | 145 | **26** |
+
+**425 correct matches rescued from the reject pile.** Rejection now means "we have
+reason to think this doesn't match", not "we couldn't tell".
+
+### The counterfactual worth reading
+
+Disable the corroboration rule and let the calibrated 0.90 band merge, and 398
+rows auto-merge at 96.7% precision — **13 wrong records written into the master
+catalog.** The band is behaving exactly as specified; 90% is simply not a safe bar
+for an unreviewed write. Calibration is what made that visible: an uncalibrated
+score can't tell you what your threshold costs.
+
+### What this cannot tell you
+
+Every labelled pair in these benchmarks is a *positive* — the gold mapping only
+lists submissions that do have a catalog match. So the fitted probability is
+P(correct | a match exists), and **the reject band is never exercised against
+genuine no-match submissions**, which a real supplier feed is full of. That is the
+next gap, not a solved problem.
 
 ### Still honestly outstanding
 - `--mode real` (live Open Food Facts) and real product photos remain **unrun**.

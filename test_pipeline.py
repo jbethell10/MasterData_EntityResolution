@@ -823,5 +823,134 @@ def test_each_run_mode_writes_to_its_own_directory():
     assert len(dbs) == 3, f"databases collide: {dbs}"
 
 
+# ---------------------------------------------------------------------------
+# Calibration -- margin -> P(correct)
+# ---------------------------------------------------------------------------
+
+def test_platt_recovers_a_known_logistic():
+    """Sanity floor: given data generated from a logistic, the fitter should
+    find roughly the curve that generated it."""
+    import numpy as np
+    from calibration import fit_platt
+
+    rng = np.random.default_rng(0)
+    x = rng.uniform(0, 1, 4000)
+    p = 1 / (1 + np.exp(-(8.0 * x - 3.0)))
+    y = (rng.uniform(size=len(x)) < p).astype(int)
+    c = fit_platt(x, y)
+    assert abs(c.a - 8.0) < 1.2, f"slope {c.a:.2f} far from 8.0"
+    assert abs(c.b + 3.0) < 1.2, f"intercept {c.b:.2f} far from -3.0"
+
+
+def test_calibrators_are_monotone():
+    """A bigger margin must never mean a lower probability -- routing bands
+    are meaningless if the mapping can go backwards."""
+    import numpy as np
+    from calibration import fit_isotonic, fit_platt
+
+    rng = np.random.default_rng(1)
+    x = rng.uniform(0, 0.5, 600)
+    y = (rng.uniform(size=len(x)) < 1 / (1 + np.exp(-(30 * x - 2)))).astype(int)
+    grid = np.linspace(0, 0.5, 200)
+    for c in (fit_platt(x, y), fit_isotonic(x, y)):
+        out = np.asarray(c(grid))
+        assert np.all(np.diff(out) >= -1e-9), f"{c.kind} is not monotone"
+
+
+def test_calibration_beats_the_hardcoded_mapping_on_held_out_data():
+    """The claim the whole change rests on. Fit on one half of a labelled set,
+    score the other half, and require a materially better Brier score than
+    margin/MARGIN_SATURATION.
+
+    Uses a synthetic margin distribution shaped like the dense-catalog case
+    (most margins well under 0.1) so the test does not depend on a benchmark
+    run being present on disk.
+    """
+    import numpy as np
+    from calibration import brier, evaluate, fit_platt
+    from stage07_confidence_route import MARGIN_SATURATION
+
+    rng = np.random.default_rng(2)
+    n = 2000
+    margins = np.abs(rng.normal(0, 0.09, n))
+    truth = 1 / (1 + np.exp(-(60 * margins - 0.5)))
+    labels = (rng.uniform(size=n) < truth).astype(int)
+
+    tr, te = np.arange(0, n, 2), np.arange(1, n, 2)
+    c = fit_platt(margins[tr], labels[tr])
+
+    hard = np.minimum(1.0, margins[te] / MARGIN_SATURATION)
+    assert brier(c(margins[te]), labels[te]) < brier(hard, labels[te]) * 0.5
+    # and the probabilities must mean what they say
+    assert evaluate(c(margins[te]), labels[te]).ece < 0.06
+
+
+def test_a_run_without_a_calibration_file_falls_back_uncalibrated():
+    """A run must never borrow another catalog's curve. Transfer was measured
+    and is systematically overconfident, so silently reusing one would repeat
+    the MARGIN_SATURATION mistake with more decimal places."""
+    import calibration as cal
+    import paths
+    from stage07_confidence_route import MARGIN_SATURATION, text_match_signal
+
+    assert cal.load(paths.run_dir("synthetic")) is None, (
+        "the synthetic run should have no calibration of its own"
+    )
+    # falls back to the documented mapping
+    assert text_match_signal(0.5, 0.3, None) == pytest.approx(0.2 / MARGIN_SATURATION)
+
+
+def test_calibrated_signal_is_used_when_supplied():
+    from stage07_confidence_route import text_match_signal
+
+    assert text_match_signal(0.5, 0.42, lambda m: 0.83) == pytest.approx(0.83)
+    # and stays inside [0, 1] even if a calibrator misbehaves
+    assert text_match_signal(0.5, 0.42, lambda m: 1.7) == 1.0
+    assert text_match_signal(0.5, 0.42, lambda m: -0.4) == 0.0
+
+
+def test_absent_signals_do_not_count_as_contradictory():
+    """A missing barcode must not score the same as three that disagree."""
+    from stage06_barcode_verify import verify_three_way
+    from stage07_confidence_route import Route, route_event
+
+    kw = dict(source_agreement=0.0, top_score=0.9, runner_up_score=0.2)
+    absent = route_event(**kw, barcode=verify_three_way("", "", ""),
+                         has_second_source=False)
+    contradictory = route_event(
+        **kw, barcode=verify_three_way(VALID_A, VALID_B, "5000000000036"),
+        has_second_source=True)
+
+    assert absent.confidence > contradictory.confidence, (
+        "no evidence scored the same as contradictory evidence"
+    )
+    assert "signals_unavailable:barcode,source_agreement" in "|".join(absent.overrides)
+
+
+def test_a_single_uncorroborated_signal_cannot_auto_merge():
+    """However strong the text match, one signal corroborates nothing -- this
+    is the case that merges two different products with similar names."""
+    from stage06_barcode_verify import verify_three_way
+    from stage07_confidence_route import Route, route_event
+
+    d = route_event(source_agreement=0.0, top_score=1.0, runner_up_score=0.0,
+                    barcode=verify_three_way("", "", ""), has_second_source=False,
+                    calibrator=lambda m: 0.999)
+    assert d.route is not Route.AUTO_MERGE
+    assert "single_signal_no_corroboration" in d.overrides
+
+
+def test_missing_second_source_is_not_a_supplier_data_entry_error():
+    """With no packaging photo there is nothing for the submission to disagree
+    with, so low agreement is not evidence the supplier typed it wrong. Getting
+    this wrong bounces a correctly-filled form back to a supplier."""
+    from stage08_resolve import ProblemClass, classify_problem
+
+    assert classify_problem(0.0, "hold_for_review", has_second_source=False) == \
+        ProblemClass.RESOLUTION_AMBIGUITY
+    assert classify_problem(0.0, "hold_for_review", has_second_source=True) == \
+        ProblemClass.BOTH
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

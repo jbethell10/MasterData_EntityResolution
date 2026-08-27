@@ -19,9 +19,12 @@ Three workflows for matching product submissions against master catalog:
 Run with: streamlit run app.py
 """
 import csv
+import json
 import sys
 from pathlib import Path
 
+import altair as alt
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -90,6 +93,76 @@ def load(name, mode="synthetic", dataset=None):
     with open(path, newline="") as f:
         rows = list(csv.DictReader(f))
     return {r["event_id"]: r for r in rows}, rows
+
+
+def _calibration_panel(dataset: str, decision_rows: list) -> None:
+    """Does the confidence score mean what it claims?
+
+    A routing band labelled 0.90 is only worth anything if 90% of the rows
+    scored that way really are correct. This panel checks that against the
+    labels rather than asserting it: each bar compares the confidence the
+    pipeline claimed against the share that turned out right.
+    """
+    import calibration as cal
+    import paths
+
+    calibrator = cal.load(paths.run_dir("leipzig", dataset))
+    with st.container(border=True):
+        if calibrator is None:
+            st.markdown("**Confidence calibration** — none fitted")
+            st.caption(
+                "Routing on the raw margin mapping, whose constant was set "
+                "against a 30-product catalog. Fit one for this catalog with "
+                f"`python3 scripts/run_calibration.py --fit {dataset}`."
+            )
+            return
+
+        meta = json.loads(
+            (paths.run_dir("leipzig", dataset) / cal.CALIBRATION_FILE).read_text()
+        ).get("_meta", {})
+
+        st.markdown("**Confidence calibration**")
+        with st.container(horizontal=True):
+            st.metric("Fitted on", f"{meta.get('n_pairs', '?')} pairs", border=True)
+            st.metric("Held-out ECE", f"{meta.get('held_out_ece', float('nan')):.3f}",
+                      border=True,
+                      help="Expected calibration error — mean gap between the "
+                           "confidence claimed and the share actually correct. "
+                           "The uncalibrated mapping scores 0.656 here.")
+            st.metric("Held-out Brier", f"{meta.get('held_out_brier', float('nan')):.3f}",
+                      border=True,
+                      help="Mean squared error of the probability. Lower is better.")
+
+        conf = np.array([float(r["confidence"]) for r in decision_rows])
+        correct = np.array([r["correct"] == "True" for r in decision_rows], dtype=float)
+        rel = cal.reliability(conf, correct, bins=8)
+        if rel:
+            frame = pd.DataFrame(
+                [{"claimed": c, "actually correct": a, "rows": n} for c, a, n in rel]
+            )
+            chart = (
+                alt.Chart(frame)
+                .mark_circle()
+                .encode(
+                    x=alt.X("claimed:Q", title="confidence claimed",
+                            scale=alt.Scale(domain=[0, 1])),
+                    y=alt.Y("actually correct:Q", title="share actually correct",
+                            scale=alt.Scale(domain=[0, 1])),
+                    size=alt.Size("rows:Q", legend=None),
+                    tooltip=["claimed", "actually correct", "rows"],
+                )
+            )
+            ideal = (
+                alt.Chart(pd.DataFrame({"x": [0, 1], "y": [0, 1]}))
+                .mark_line(strokeDash=[4, 4], color="grey")
+                .encode(x="x", y="y")
+            )
+            st.altair_chart(ideal + chart)
+            st.caption(
+                "Points on the dashed line mean the score is honest. Points "
+                "below it mean the pipeline is claiming more confidence than "
+                "it has earned."
+            )
 
 
 @st.cache_resource(show_spinner="Loading benchmark and precomputing match signals…")
@@ -163,7 +236,7 @@ with tab_trace:
         st.subheader("Packaging artwork")
         img_path = ROOT / e["image_path"] if e.get("image_path") else None
         if img_path and img_path.exists():
-            st.image(str(img_path), caption=e["image_path"], use_container_width=True)
+            st.image(str(img_path), caption=e["image_path"], width="stretch")
         else:
             st.info(
                 "Artwork missing for this event. Regenerate with "
@@ -184,7 +257,7 @@ with tab_trace:
             },
             index=["brand", "product name", "quantity", "gtin"],
         )
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df, width="stretch")
         if "supplier_corruption_applied" in e:
             st.caption(f"Supplier corruption applied: `{e['supplier_corruption_applied']}`")
         else:
@@ -203,7 +276,7 @@ with tab_trace:
                 "artwork ↔ master": "✓" if c[f"{field}_artwork_vs_master"] == "True" else "✗",
                 "supplier ↔ master": "✓" if c[f"{field}_supplier_vs_master"] == "True" else "✗",
             })
-        st.dataframe(pd.DataFrame(rows).set_index("field"), use_container_width=True)
+        st.dataframe(pd.DataFrame(rows).set_index("field"), width="stretch")
 
         status = c["cross_check_status"]
         msg = f"Overall: {status} (score {c['agreement_score']})"
@@ -250,10 +323,11 @@ with tab_routing:
     """)
     st.info(
         "**These catalogs carry no barcodes and no packaging photos**, so the text "
-        "signal is the only evidence available. Nothing can auto-merge: writing to a "
+        "signal is the only evidence available. Nothing auto-merges: writing to a "
         "master catalog unreviewed requires corroboration, and one signal corroborates "
-        "nothing. Every row surfaced for review is a correct match, so the confidence "
-        "score separates well — it is the *evidence* that is thin, not the matching."
+        "nothing — however high its confidence. Everything above the floor goes to a "
+        "human instead, and the confidence attached to it is a calibrated probability, "
+        "not a raw score."
     )
 
     col_ctrl, col_routing = st.columns([1.2, 2.4])
@@ -315,6 +389,9 @@ with tab_routing:
             event_ids = sorted(decisions, key=lambda x: int(x.split("_")[-1]))
             event_id = st.selectbox("Choose an event", event_ids, key="routing_event")
 
+        with col_routing:
+            _calibration_panel(dataset_choice, decision_rows)
+
         if event_id:
             d = decisions[event_id]
             e = lz_events.get(event_id, {})
@@ -370,7 +447,7 @@ with tab_routing:
                     ],
                 }
                 df_comp = pd.DataFrame(comp_data, index=["brand", "product", "gtin"])
-                st.dataframe(df_comp, use_container_width=True)
+                st.dataframe(df_comp, width="stretch")
 
                 st.divider()
 
@@ -512,4 +589,4 @@ with tab_bench:
 
     st.caption(f"{len(inspect_rows):,} rows — every one is a real labelled pair, "
                "so these are genuine engine errors, not synthetic ones.")
-    st.dataframe(pd.DataFrame(inspect_rows[:300]), use_container_width=True, height=420)
+    st.dataframe(pd.DataFrame(inspect_rows[:300]), width="stretch", height=420)

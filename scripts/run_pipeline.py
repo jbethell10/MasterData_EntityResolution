@@ -51,6 +51,19 @@ def main():
     catalog_by_id = {r[0]: r for r in catalog}
     index = build_vector_index(catalog)
 
+    # A calibration fitted on THIS catalog, if one has been produced. Runs
+    # without one fall back to the uncalibrated margin mapping rather than
+    # borrowing another catalog's curve -- transfer was measured and it is
+    # systematically overconfident (run_calibration.py, Q2).
+    import calibration as cal
+    calibrator = cal.load(run_dir)
+    if calibrator is None:
+        print("No calibration for this run — routing on the raw margin mapping.\n"
+              "  Fit one with: python3 scripts/run_calibration.py --fit "
+              f"{args.dataset if args.mode == 'leipzig' else '<dataset>'}\n")
+    else:
+        print(f"Using {calibrator.kind} calibration fitted on this catalog.\n")
+
     with open(EVENTS_PATH, newline="") as f:
         events = list(csv.DictReader(f))
     with open(CROSS_PATH, newline="") as f:
@@ -104,13 +117,14 @@ def main():
             source_agreement=source_agreement,
             top_score=top_score, runner_up_score=runner_up,
             barcode=barcode, has_second_source=has_second_source,
-            alias_hit=bool(hit),
+            alias_hit=bool(hit), calibrator=calibrator,
         )
 
         problem_class = audit.log_decision(
             conn, event_id=eid, resolved_id=top_id, true_master_id=true_id,
             route=decision.route.value, confidence=decision.confidence,
             source_agreement=source_agreement,
+            has_second_source=has_second_source,
             evidence={"signals": decision.signals, "overrides": decision.overrides,
                       "barcode": barcode.as_row(), "top_score": round(top_score, 3),
                       "runner_up": round(runner_up, 3)},

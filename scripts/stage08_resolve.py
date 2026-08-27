@@ -79,8 +79,18 @@ class ProblemClass:
     UNRESOLVED = "unresolved"                          # rejected outright
 
 
-def classify_problem(source_agreement: float, route: str) -> str:
-    defective = source_agreement < 1.0
+def classify_problem(source_agreement: float, route: str,
+                     has_second_source: bool = True) -> str:
+    """Which KIND of problem this row represents, if any.
+
+    `has_second_source=False` means there was no independent reading of the
+    pack to compare the submission against. Without one, low agreement is not
+    evidence the supplier typed something wrong -- there is simply nothing to
+    disagree with. Treating those as data-entry errors labelled all 1,092
+    Leipzig rows as defective submissions and would have sent a supplier a
+    bounce-back for a form they filled in correctly.
+    """
+    defective = has_second_source and source_agreement < 1.0
     unresolved = route == "reject"
     ambiguous = route == "hold_for_review"
 
@@ -126,9 +136,10 @@ def record_alias_reuse(conn: sqlite3.Connection, brand: str, product_name: str) 
 def log_decision(
     conn: sqlite3.Connection, *, event_id: str, resolved_id, true_master_id,
     route: str, confidence: float, source_agreement: float, evidence: dict,
+    has_second_source: bool = True,
     decision_maker: str = "agent", approved_by: str | None = None,
 ) -> str:
-    problem_class = classify_problem(source_agreement, route)
+    problem_class = classify_problem(source_agreement, route, has_second_source)
     conn.execute(
         "INSERT INTO audit_log (ts, event_id, resolved_id, true_master_id, route, "
         "confidence, problem_class, decision_maker, approved_by, evidence) "
